@@ -1,0 +1,8 @@
+{
+  "name": "inline-images",
+  "version": "0.1.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Shows pictures right in the transcript: under each Read of a picture and under prompts with pasted images (Ghostty, kitty, WezTerm)"
+}

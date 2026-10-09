@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "zoones",
+  "description": "Claude Code mods by Zoones",
+  "owner": {
+    "name": "Zoones GmbH",
+    "email": "mario.ivankovits@zoones.net"
+  },
+  "plugins": [
+    {
+      "name": "inline-images",
+      "source": "./plugins/inline-images",
+      "description": "Shows pictures right in the transcript: under each Read of a picture and under prompts with pasted images (Ghostty, kitty, WezTerm)"
+    }
+  ]
+}
