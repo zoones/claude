@@ -55,11 +55,13 @@ test('pastedImageNumbers and pastedDirCandidates', async () => {
 
 /**
  * A host whose files are `files` (path -> base64); every other read or stat fails like a missing
- * file. `sips … <src> --out <dst>` "converts" by writing a PNG to `dst`, and is recorded.
+ * file. `sips … <src> --out <dst>` "converts" by writing a PNG to `dst`, and is recorded. The first
+ * `abortedIds` runs of `id` reject the way a call of an abandoned draw does.
  */
-function host(on: On, env: Record<string, string>, files: Record<string, string>) {
+function host(on: On, env: Record<string, string>, files: Record<string, string>, { abortedIds = 0 } = {}) {
   const reads: string[] = []
   const converts: string[] = []
+  const ids: string[] = []
   mock.env(on, env)
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -67,9 +69,14 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
   })
   on('session.root', () => ({ value: ROOT }))
   on('session.id', () => ({ value: SESSION }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('process.run', (_$, e) => {
     const ok = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
     if (e.argv[0] === 'id') {
+      ids.push('id')
+      if (ids.length <= abortedIds) {
+        throw new Error('inline-images: $.process.run(id) aborted, the call interrupted')
+      }
       return { value: { ...ok, stdout: '501\n' } }
     }
     if (e.argv[0] === 'sips') {
@@ -97,7 +104,7 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
     }
     return { value: { base64 } }
   })
-  return { reads, converts }
+  return { reads, converts, ids }
 }
 
 const readRow = (filePath: string, extra: Partial<Record<string, unknown>> = {}) => ({
@@ -170,6 +177,29 @@ test('pasted pictures show under the prompt, found in /private/tmp or /tmp', asy
   expect(images).toHaveLength(1)
   expect(images[0]).toMatchObject({ props: { source: { file: `${linuxDir}/2.png`, format: 'png' } } })
   expect(await ui.find({ type: 'Text', text: 'engine row' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an aborted `id` leaves that draw plain, and the next draw still finds the pasted picture', async ($, on) => {
+  const dir = `/private/tmp/claude-501/-Users-me-project/${SESSION}/images`
+  host(on, GHOSTTY, { [`${dir}/1.png`]: LABEL_HEAD }, { abortedIds: 1 })
+  const first = await $.ui.mount({ ...userRow('[Image #1]'), surface: 'terminal' })
+  expect(await first.find({ type: 'Image' })).toBeUndefined()
+  expect(await first.find({ type: 'Text', text: 'engine row' })).toBeDefined()
+  await first.unmount()
+  const again = await $.ui.mount({ ...userRow('[Image #1]'), surface: 'terminal' })
+  expect(await again.find({ type: 'Image' })).toMatchObject({ props: { source: { file: `${dir}/1.png`, format: 'png' } } })
+  await again.unmount()
+})
+
+test('session.start resolves the host, so drawing runs no `id` of its own', async ($, on) => {
+  const dir = `/private/tmp/claude-501/-Users-me-project/${SESSION}/images`
+  const { ids } = host(on, GHOSTTY, { [`${dir}/1.png`]: LABEL_HEAD })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  expect(ids).toEqual(['id'])
+  const ui = await $.ui.mount({ ...userRow('[Image #1]'), surface: 'terminal' })
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+  expect(ids).toEqual(['id'])
   await ui.unmount()
 })
 

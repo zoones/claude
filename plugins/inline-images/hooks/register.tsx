@@ -1,4 +1,4 @@
-// Tested via: claude plugin test buildtools/claude-mods/inline-images (hooks/register.test.tsx)
+// Tested via: claude plugin test plugins/inline-images (hooks/register.test.tsx)
 import type { EngineInterface, Register } from 'claude-code'
 
 const MAX_COLUMNS = 60
@@ -89,22 +89,37 @@ export function cachePathFor(uid: string, path: string) {
   return ret
 }
 
-/** Resolved once per load: whether pictures are drawn at all, and this machine's uid. */
-const host = { isResolved: false, isOn: false, uid: '' }
+/** Whether pictures are drawn at all, and this machine's uid; null until resolved. */
+let host: { isOn: boolean; uid: string } | null = null
 
+/**
+ * Resolves `host` once per load, kept only once it succeeded: a call of an abandoned draw rejects
+ * (`aborted, the call interrupted`), and the next draw has to try again rather than go on with no uid.
+ */
 async function resolveHost($: EngineInterface) {
-  if (host.isResolved) {
-    return
+  if (host !== null) {
+    return host
   }
-  host.isResolved = true
-  host.isOn = isGraphicsTerminal({
+  const isOn = isGraphicsTerminal({
     override: await $.env.get('CLAUDE_INLINE_IMAGES'),
     termProgram: await $.env.get('TERM_PROGRAM'),
     term: await $.env.get('TERM'),
     kittyWindowId: await $.env.get('KITTY_WINDOW_ID'),
     tmux: await $.env.get('TMUX'),
   })
-  host.uid = host.isOn ? (await $.process.run(['id', '-u'])).stdout.trim() : ''
+  const uid = isOn ? (await $.process.run(['id', '-u'])).stdout.trim() : ''
+  host = { isOn, uid }
+  return host
+}
+
+/** The resolved host for a draw, or null when this draw could not resolve it (it then stays plain). */
+async function hostForDraw($: EngineInterface) {
+  try {
+    const ret = await resolveHost($)
+    return ret
+  } catch {
+    return null
+  }
 }
 
 async function mtimeOf($: EngineInterface, path: string) {
@@ -120,7 +135,7 @@ async function mtimeOf($: EngineInterface, path: string) {
  * A PNG of the picture at `path`: the file itself when it is one, else a copy converted by `sips`
  * (macOS) into the cache, redone when the source is newer. Null when that fails (e.g. no `sips`).
  */
-async function asPng($: EngineInterface, path: string) {
+async function asPng($: EngineInterface, path: string, uid: string) {
   if (path.toLowerCase().endsWith('.png')) {
     return path
   }
@@ -128,7 +143,7 @@ async function asPng($: EngineInterface, path: string) {
   if (sourceTime === null) {
     return null
   }
-  const cache = cachePathFor(host.uid, path)
+  const cache = cachePathFor(uid, path)
   const cacheTime = await mtimeOf($, cache)
   if (cacheTime !== null && cacheTime >= sourceTime) {
     return cache
@@ -144,9 +159,9 @@ async function asPng($: EngineInterface, path: string) {
 }
 
 /** The picture at `path` as a PNG with the cells to draw it in, or null when it is missing or unreadable. */
-async function picture($: EngineInterface, path: string) {
+async function picture($: EngineInterface, path: string, uid: string) {
   try {
-    const png = await asPng($, path)
+    const png = await asPng($, path, uid)
     if (png === null) {
       return null
     }
@@ -160,6 +175,16 @@ async function picture($: EngineInterface, path: string) {
 }
 
 export const register: Register = on => {
+  // Resolve the host outside any draw, which the engine may abandon midway; rows drawn before it was
+  // known (an install into a running session) are drawn again.
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    if ((await hostForDraw($))?.isOn) {
+      $.ui.invalidate('ui.render')
+    }
+    return started
+  })
+
   // A Read of a picture shows it right under its transcript row.
   on('ui.render', { component: 'ToolUse', props: { tool: 'Read' } }, async ($, e, next) => {
     const row = await next(e)
@@ -169,8 +194,8 @@ export const register: Register = on => {
     if (e.props.isRunning || e.props.isErrored || !isImagePath(path) || !('Image' in elements)) {
       return row
     }
-    await resolveHost($)
-    const shown = host.isOn ? await picture($, path) : null
+    const resolved = await hostForDraw($)
+    const shown = resolved?.isOn ? await picture($, path, resolved.uid) : null
     if (shown === null) {
       return row
     }
@@ -194,11 +219,11 @@ export const register: Register = on => {
     if (numbers.length === 0 || !('Image' in elements)) {
       return row
     }
-    await resolveHost($)
-    if (!host.isOn) {
+    const resolved = await hostForDraw($)
+    if (!resolved?.isOn) {
       return row
     }
-    const dirs = pastedDirCandidates(host.uid, await $.session.root(), await $.session.id())
+    const dirs = pastedDirCandidates(resolved.uid, await $.session.root(), await $.session.id())
     // Claude Code keeps a pasted file's own format (`4.jpg` for a dropped JPEG), so probe each extension.
     const shown: { path: string; columns: number; rows: number }[] = []
     for (const n of numbers) {
@@ -207,7 +232,7 @@ export const register: Register = on => {
         if ((await mtimeOf($, path)) === null) {
           continue
         }
-        const found = await picture($, path)
+        const found = await picture($, path, resolved.uid)
         if (found !== null) {
           shown.push(found)
         }
