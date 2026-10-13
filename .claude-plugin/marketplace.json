@@ -11,6 +11,11 @@
       "name": "inline-images",
       "source": "./plugins/inline-images",
       "description": "Shows pictures right in the transcript: under each Read of a picture and under prompts with pasted images (Ghostty, kitty, WezTerm)"
+    },
+    {
+      "name": "time-sense",
+      "source": "./plugins/time-sense",
+      "description": "Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was"
     }
   ]
 }

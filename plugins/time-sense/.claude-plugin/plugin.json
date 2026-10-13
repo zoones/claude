@@ -1,0 +1,8 @@
+{
+  "name": "time-sense",
+  "version": "0.1.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was"
+}
