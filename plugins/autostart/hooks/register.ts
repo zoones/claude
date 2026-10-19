@@ -16,6 +16,17 @@ export function autostartPrompt(cwd: string, text: string) {
   return ret
 }
 
+/** The prompt that has Claude interview the person and write the directory's first AUTOSTART.md. */
+export function setupPrompt(cwd: string) {
+  const ret =
+    `There is no ${FILE} in ${cwd} yet. Help me write one: it is a prompt that runs by itself as the first ` +
+    'prompt of every new Claude Code session started in this directory. Ask me what should happen at the start ' +
+    '(AskUserQuestion where it fits; look at the directory first so your suggestions match it). Then write ' +
+    `${cwd}/${FILE} as instructions addressed to Claude, show it to me, and tell me to type /${COMMAND} ` +
+    'to try it and trust it from now on.'
+  return ret
+}
+
 /** The directory's AUTOSTART.md, or null when there is none (or it is empty). */
 async function readFile($: EngineInterface, cwd: string) {
   const text = await $.fs.read(`${cwd}/${FILE}`).catch(() => null)
@@ -65,7 +76,8 @@ export const register: Register = on => {
     const cwd = await $.session.cwd()
     const text = await readFile($, cwd)
     if (text === null) {
-      return { text: `No ${FILE} in ${cwd}.` }
+      void $.clock.after(0, () => $.prompt.submit({ text: setupPrompt(cwd) }))
+      return { text: `No ${FILE} in ${cwd} yet: let's write one.` }
     }
     await $.store.set(TRUSTED_KEY, { ...(await trusted($)), [cwd]: text })
     // Submitted from the command's own hook the prompt would wait on that hook: hand it to a timer.

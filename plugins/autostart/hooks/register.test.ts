@@ -56,6 +56,20 @@ test('/autostart runs the file and trusts it for the next session', async ($, on
   expect(prompts[0]).toContain(FILE_TEXT)
 })
 
+test('/autostart without a file starts writing one', async ($, on) => {
+  mock.store(on)
+  const { clock, prompts } = host(on, {})
+  const ran = await $.command.run({
+    command: 'autostart',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  expect(ran.text).toContain("let's write one")
+  await clock.advance(1)
+  expect(prompts[0]).toContain(`There is no AUTOSTART.md in ${CWD} yet`)
+})
+
 test('a trusted, unchanged AUTOSTART.md runs once per session', async ($, on) => {
   mock.store(on, { trusted: { [CWD]: FILE_TEXT } })
   const { prompts } = host(on, { [`${CWD}/AUTOSTART.md`]: FILE_TEXT })

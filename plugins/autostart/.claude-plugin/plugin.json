@@ -1,6 +1,6 @@
 {
   "name": "autostart",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
   "license": "MIT",
   "repository": "https://gitlab.com/zoones.net/oss/claude",

@@ -18,6 +18,9 @@ directory has an `AUTOSTART.md` (and every time the file changes) the mod only s
 `/autostart` to run the file now and trust exactly this text for that directory. From then on it runs
 by itself at the start of each new session there.
 
+No `AUTOSTART.md` yet? `/autostart` in that directory has Claude ask what should happen at the start
+and write the file for you; then `/autostart` once more to try and trust it.
+
 It runs once per session: not again on `--resume`/`--continue` of a session that already ran it, and
 not in `claude -p` runs. The prompt goes through the normal permission checks like any typed prompt.
 
