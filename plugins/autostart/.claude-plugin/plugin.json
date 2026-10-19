@@ -1,0 +1,8 @@
+{
+  "name": "autostart",
+  "version": "0.1.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Runs the AUTOSTART.md of the directory Claude starts in as the session's first prompt, once you have trusted that file with /autostart"
+}

@@ -16,6 +16,11 @@
       "name": "time-sense",
       "source": "./plugins/time-sense",
       "description": "Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was"
+    },
+    {
+      "name": "autostart",
+      "source": "./plugins/autostart",
+      "description": "Runs the AUTOSTART.md of the directory Claude starts in as the session's first prompt, once you have trusted that file with /autostart"
     }
   ]
 }
