@@ -13,6 +13,11 @@
       "description": "Shows pictures right in the transcript: under each Read of a picture and under prompts with pasted images (Ghostty, kitty, WezTerm)"
     },
     {
+      "name": "inline-mermaid",
+      "source": "./plugins/inline-mermaid",
+      "description": "Draws Mermaid diagrams right in the transcript: under Claude's replies and under Read, Write and Edit of .mmd files and Markdown with mermaid blocks (Ghostty, kitty, WezTerm; needs mmdc)"
+    },
+    {
       "name": "time-sense",
       "source": "./plugins/time-sense",
       "description": "Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was"

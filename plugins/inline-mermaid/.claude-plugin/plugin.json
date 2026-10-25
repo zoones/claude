@@ -1,0 +1,8 @@
+{
+  "name": "inline-mermaid",
+  "version": "0.1.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Draws Mermaid diagrams right in the transcript: under Claude's replies and under Read, Write and Edit of .mmd files and Markdown with mermaid blocks (Ghostty, kitty, WezTerm; needs mmdc)"
+}
