@@ -8,6 +8,10 @@ const MAX_PER_ROW = 4
 /** mmdc renders at this pixel ratio, so a diagram stays sharp on a Retina screen. */
 const SCALE = 2
 const THEMES = ['dark', 'default', 'forest', 'neutral']
+/** How often the macOS appearance is looked at again, so diagrams follow a switch to light or dark. */
+const APPEARANCE_EVERY_MS = 60_000
+/** Cached diagrams older than this are deleted at session start. */
+const CACHE_DAYS = 30
 
 export type TerminalEnv = {
   override?: string
@@ -37,9 +41,19 @@ export function isGraphicsTerminal(env: TerminalEnv) {
   return ret
 }
 
-/** The mmdc theme: CLAUDE_INLINE_MERMAID_THEME when it names one, else `dark`. */
-export function themeFrom(value: string | undefined) {
-  const ret = value !== undefined && THEMES.includes(value) ? value : 'dark'
+/**
+ * The mmdc theme matching the terminal: CLAUDE_INLINE_MERMAID_THEME when it names one, else the
+ * macOS appearance, which Ghostty with `theme = light:…,dark:…`, kitty and WezTerm follow:
+ * `defaults read -g AppleInterfaceStyle` says `Dark` in dark mode and fails in light mode, where the
+ * key is unset ("Could not find key …", on older macOS "… does not exist"). Anything else (Linux, no `defaults`) is taken as dark. `appearance` is that call's
+ * result, or null when it could not run.
+ */
+export function themeFor(override: string | undefined, appearance: { exitCode: number; stdout: string; stderr: string } | null) {
+  if (override !== undefined && THEMES.includes(override)) {
+    return override
+  }
+  const isLight = appearance !== null && appearance.exitCode !== 0 && /could not find key|does not exist/i.test(appearance.stderr)
+  const ret = isLight ? 'default' : 'dark'
   return ret
 }
 
@@ -165,8 +179,10 @@ export function cacheDirFor(uid: string) {
   return `/tmp/claude-inline-mermaid-${uid}`
 }
 
-/** Whether diagrams are drawn, this machine's uid and the theme; null until resolved. */
-let host: { isOn: boolean; uid: string; theme: string } | null = null
+/** Whether diagrams are drawn and this machine's uid; null until resolved. */
+let host: { isOn: boolean; uid: string } | null = null
+/** The mmdc theme now; null until session.start looked, and no diagram is drawn before. */
+let theme: string | null = null
 /** Diagrams waiting for mmdc, by digest; a draw only queues, the session.start worker runs them. */
 const queue = new Map<string, { dir: string; theme: string; source: string }>()
 /** Diagrams queued or being drawn by mmdc now, by digest. */
@@ -188,9 +204,8 @@ async function resolveHost($: EngineInterface) {
     kittyWindowId: await $.env.get('KITTY_WINDOW_ID'),
     tmux: await $.env.get('TMUX'),
   })
-  const theme = themeFrom(await $.env.get('CLAUDE_INLINE_MERMAID_THEME'))
   const uid = isOn ? (await $.process.run(['id', '-u'])).stdout.trim() : ''
-  host = { isOn, uid, theme }
+  host = { isOn, uid }
   return host
 }
 
@@ -200,6 +215,31 @@ async function hostForDraw($: EngineInterface) {
     return ret
   } catch {
     return null
+  }
+}
+
+/** The theme matching the terminal now (themeFor); `dark` when even that cannot be asked. */
+async function currentTheme($: EngineInterface) {
+  try {
+    const override = await $.env.get('CLAUDE_INLINE_MERMAID_THEME')
+    let appearance: { exitCode: number; stdout: string; stderr: string } | null = null
+    try {
+      appearance = await $.process.run(['defaults', 'read', '-g', 'AppleInterfaceStyle'])
+    } catch {
+      appearance = null
+    }
+    return themeFor(override, appearance)
+  } catch {
+    return 'dark'
+  }
+}
+
+/** Looks at the appearance again and redraws with the other theme once it changed. */
+async function followAppearance($: EngineInterface) {
+  const now = await currentTheme($)
+  if (now !== theme) {
+    theme = now
+    $.ui.invalidate('ui.render')
   }
 }
 
@@ -259,13 +299,14 @@ async function withDiagrams($: EngineInterface, e: RenderInput, row: RenderEleme
     return row
   }
   const resolved = await hostForDraw($)
-  if (!resolved?.isOn) {
+  const drawTheme = theme
+  if (!resolved?.isOn || drawTheme === null) {
     return row
   }
   const room = (e.viewport?.columns ?? MAX_COLUMNS) - indent - 2
   const shown: Shown[] = []
   for (const source of sources.slice(0, MAX_PER_ROW)) {
-    shown.push(await diagram($, source, resolved, room))
+    shown.push(await diagram($, source, { uid: resolved.uid, theme: drawTheme }, room))
   }
   const more = sources.length - shown.length
   const { Box, Image, Text, Link } = elements
@@ -299,7 +340,12 @@ async function withDiagrams($: EngineInterface, e: RenderInput, row: RenderEleme
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    if ((await hostForDraw($))?.isOn) {
+    const resolved = await hostForDraw($)
+    if (resolved?.isOn) {
+      theme = await currentTheme($)
+      $.clock.every(APPEARANCE_EVERY_MS, () => void followAppearance($))
+      // Old diagrams go; a missing folder (nothing drawn yet) is no error worth a word.
+      $.process.run(['find', cacheDirFor(resolved.uid), '-type', 'f', '-mtime', `+${CACHE_DAYS}`, '-delete']).catch(() => undefined)
       // mmdc takes a second or two: it runs here, outside any draw, which then only waits on the cache.
       hasWorker = true
       $.clock.every(300, () => {

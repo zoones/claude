@@ -31,13 +31,17 @@ Without it the mod writes `mermaid: mmdc did not run: …` under each diagram.
 mmdc takes a second or two per diagram, so it never runs inside a draw: the row first says
 `mermaid: drawing diagram…`, mmdc renders in the background and the row is drawn again with the
 picture. Pictures (and errors) are cached by a hash of theme and diagram text in
-`/tmp/claude-inline-mermaid-<uid>/`, so a redraw or the same diagram elsewhere is instant.
+`/tmp/claude-inline-mermaid-<uid>/`, so a redraw or the same diagram elsewhere is instant. Files
+older than 30 days are deleted when a session starts.
 
 Size: about 6 CSS pixels per column, at most 100 × 40 cells and never wider than the terminal,
 aspect ratio kept. Tall state diagrams hit the 40 rows; `direction LR` in the diagram helps.
 
-Theme: `dark` on a transparent background. On a light terminal set
-`CLAUDE_INLINE_MERMAID_THEME=default` (or `forest`, `neutral`).
+Theme: follows the macOS appearance, which Ghostty (`theme = light:…,dark:…`), kitty and WezTerm
+follow too — `dark` in dark mode, `default` in light mode, on a transparent background. It is looked
+at again every minute, so diagrams are drawn anew when the Mac switches at dusk. Without macOS
+(Linux) it is `dark`. A terminal with a fixed look that differs from the system's: set
+`CLAUDE_INLINE_MERMAID_THEME` to `dark`, `default`, `forest` or `neutral`.
 
 Like `inline-images`, it draws only in **Ghostty, kitty and WezTerm**, never inside tmux, and does
 nothing elsewhere. Force it with `CLAUDE_INLINE_MERMAID=1` (or off with `0`).

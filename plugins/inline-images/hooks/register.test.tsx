@@ -63,6 +63,7 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
   const reads: string[] = []
   const converts: string[] = []
   const ids: string[] = []
+  const finds: string[][] = []
   mock.env(on, env)
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -79,6 +80,9 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
         throw new Error('inline-images: $.process.run(id) aborted, the call interrupted')
       }
       return { value: { ...ok, stdout: '501\n' } }
+    }
+    if (e.argv[0] === 'find') {
+      finds.push([...e.argv])
     }
     if (e.argv[0] === 'sips') {
       const source = e.argv[4] ?? ''
@@ -105,7 +109,7 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
     }
     return { value: { base64 } }
   })
-  return { reads, converts, ids }
+  return { reads, converts, ids, finds }
 }
 
 const readRow = (filePath: string, extra: Partial<Record<string, unknown>> = {}) => ({
@@ -253,4 +257,16 @@ test('a failed conversion (no sips) leaves the row as drawn', async ($, on) => {
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'engine row' })).toBeDefined()
   await ui.unmount()
+})
+
+test('session start deletes converted pictures older than 30 days, only where pictures are drawn', async ($, on) => {
+  const { finds } = host(on, GHOSTTY, {})
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  expect(finds).toEqual([['find', '/tmp/claude-inline-images-501', '-type', 'f', '-mtime', '+30', '-delete']])
+})
+
+test('iTerm2 runs no cleanup', async ($, on) => {
+  const { finds } = host(on, ITERM, {})
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  expect(finds).toEqual([])
 })

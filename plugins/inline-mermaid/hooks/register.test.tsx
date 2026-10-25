@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderPropsOf } from 'claude-code'
 
-import { cacheDirFor, cellsFor, digest, errorGist, lineRange, markdownBlocksFor, mermaidBlocks, themeFrom } from './register'
+import { cacheDirFor, cellsFor, digest, errorGist, lineRange, markdownBlocksFor, mermaidBlocks, themeFor } from './register'
 
 /** The first 32 bytes of a real 172 x 596 PNG (an mmdc state diagram at scale 2), base64. */
 const DIAGRAM_HEAD = 'iVBORw0KGgoAAAANSUhEUgAAAKwAAAJUCAYAAACVNM8='
@@ -64,10 +64,17 @@ test('cellsFor keeps the aspect within the room and 100 x 40 cells', async () =>
   expect(cellsFor({ width: 400, height: 6000 }).rows).toBe(40)
 })
 
-test('themeFrom takes a known theme, else dark', async () => {
-  expect(themeFrom('default')).toBe('default')
-  expect(themeFrom('rainbow')).toBe('dark')
-  expect(themeFrom(undefined)).toBe('dark')
+const DARK = { exitCode: 0, stdout: 'Dark\n', stderr: '' }
+const LIGHT = { exitCode: 1, stdout: '', stderr: "Could not find key 'AppleInterfaceStyle' in domain 'kCFPreferencesAnyApplication'." }
+
+test('themeFor: a named theme wins, else the macOS appearance, else dark', async () => {
+  expect(themeFor('forest', LIGHT)).toBe('forest')
+  expect(themeFor('rainbow', DARK)).toBe('dark')
+  expect(themeFor(undefined, DARK)).toBe('dark')
+  expect(themeFor(undefined, LIGHT)).toBe('default')
+  expect(themeFor(undefined, { ...LIGHT, stderr: 'The domain/default pair of (kCFPreferencesAnyApplication, AppleInterfaceStyle) does not exist' })).toBe('default')
+  expect(themeFor(undefined, { exitCode: 127, stdout: '', stderr: 'defaults: command not found' })).toBe('dark')
+  expect(themeFor(undefined, null)).toBe('dark')
 })
 
 /**
@@ -77,6 +84,9 @@ test('themeFrom takes a known theme, else dark', async () => {
  */
 function host(on: On, env: Record<string, string>, files: Record<string, string>, { missingMmdc = false } = {}) {
   const mmdc: string[] = []
+  const themes: string[] = []
+  const finds: string[][] = []
+  const look = { appearance: DARK }
   const reads: string[] = []
   mock.env(on, env)
   const clock = mock.clock(on)
@@ -90,7 +100,15 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
     if (e.argv[0] === 'id') {
       return { value: { ...ok, stdout: '501\n' } }
     }
+    if (e.argv[0] === 'defaults') {
+      return { value: { ...ok, ...look.appearance } }
+    }
+    if (e.argv[0] === 'find') {
+      finds.push([...e.argv])
+      return { value: ok }
+    }
     if (e.argv[0] === 'mmdc') {
+      themes.push(e.argv[e.argv.indexOf('-t') + 1] ?? '')
       if (missingMmdc) {
         throw new Error('spawn mmdc ENOENT')
       }
@@ -116,7 +134,7 @@ function host(on: On, env: Record<string, string>, files: Record<string, string>
     }
     return { value: e.as === 'bytes' ? { base64: content } : content }
   })
-  return { mmdc, reads, clock }
+  return { mmdc, reads, clock, themes, finds, look }
 }
 
 const reply = (text: string, extra: Partial<Record<string, unknown>> = {}) => ({
@@ -245,4 +263,35 @@ test('a Read of a Markdown file with many diagrams draws four and names the rest
   expect(await ui.findAll({ type: 'Image' })).toHaveLength(4)
   expect(await ui.find({ type: 'Text', text: /2 more diagrams not drawn/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('diagrams follow the macOS appearance: a switch to light draws them again in the light theme', async ($, on) => {
+  const { mmdc, themes, clock, look } = host(on, GHOSTTY, {})
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...reply(fence(STATES)), surface: 'terminal' })
+  await clock.advance(300)
+  expect(await ui.find({ type: 'Image' })).toMatchObject({ props: { source: { file: `${DIR}/${await digest('dark', STATES)}.png` } } })
+  look.appearance = LIGHT
+  await clock.advance(60_000)
+  await clock.advance(300)
+  expect(themes).toEqual(['dark', 'default'])
+  expect(mmdc).toEqual([STATES, STATES])
+  expect(await ui.find({ type: 'Image' })).toMatchObject({ props: { source: { file: `${DIR}/${await digest('default', STATES)}.png` } } })
+  await ui.unmount()
+})
+
+test('CLAUDE_INLINE_MERMAID_THEME overrides the appearance', async ($, on) => {
+  const { themes, clock, look } = host(on, { ...GHOSTTY, CLAUDE_INLINE_MERMAID_THEME: 'neutral' }, {})
+  look.appearance = LIGHT
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...reply(fence(STATES)), surface: 'terminal' })
+  await clock.advance(300)
+  expect(themes).toEqual(['neutral'])
+  await ui.unmount()
+})
+
+test('session start deletes cached diagrams older than 30 days', async ($, on) => {
+  const { finds } = host(on, GHOSTTY, {})
+  await $.session.start(START)
+  expect(finds).toEqual([['find', DIR, '-type', 'f', '-mtime', '+30', '-delete']])
 })

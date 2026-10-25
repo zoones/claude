@@ -6,7 +6,8 @@ A Claude Code mod that shows pictures right in the transcript:
 - under your own prompt when you pasted or dropped a picture into it (`[Image #N]`).
 
 The terminal draws PNG only: other formats (JPEG, GIF, WebP, HEIC, TIFF, BMP) are converted with
-`sips` (macOS) into `/tmp/claude-inline-images-<uid>/` and redone only when the source is newer.
+`sips` (macOS) into `/tmp/claude-inline-images-<uid>/` and redone only when the source is newer; conversions older than
+30 days are deleted when a session starts.
 Without `sips` (Linux) only PNGs show.
 
 Pictures are drawn with the terminal's graphics protocol (kitty), so they appear only in

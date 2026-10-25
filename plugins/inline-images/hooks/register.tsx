@@ -3,6 +3,8 @@ import type { EngineInterface, Register } from 'claude-code'
 
 const MAX_COLUMNS = 90
 const MAX_ROWS = 36
+/** Converted pictures older than this are deleted at session start. */
+const CACHE_DAYS = 30
 
 export type TerminalEnv = {
   override?: string
@@ -87,9 +89,13 @@ export function isImagePath(path: string) {
   return ret
 }
 
+export function cacheDirFor(uid: string) {
+  return `/tmp/claude-inline-images-${uid}`
+}
+
 /** Where the PNG converted from `path` is kept: one flat cache folder per user, the path flattened into the name. */
 export function cachePathFor(uid: string, path: string) {
-  const ret = `/tmp/claude-inline-images-${uid}/${path.replace(/[^A-Za-z0-9._-]/g, '_')}.png`
+  const ret = `${cacheDirFor(uid)}/${path.replace(/[^A-Za-z0-9._-]/g, '_')}.png`
   return ret
 }
 
@@ -186,7 +192,10 @@ export const register: Register = on => {
   // known (an install into a running session) are drawn again.
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    if ((await hostForDraw($))?.isOn) {
+    const resolved = await hostForDraw($)
+    if (resolved?.isOn) {
+      // Old conversions go (a newer source is converted again anyway); a missing folder is no error worth a word.
+      $.process.run(['find', cacheDirFor(resolved.uid), '-type', 'f', '-mtime', `+${CACHE_DAYS}`, '-delete']).catch(() => undefined)
       $.ui.invalidate('ui.render')
     }
     return started
