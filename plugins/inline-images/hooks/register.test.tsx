@@ -35,13 +35,14 @@ test('pngSize reads the IHDR size and refuses anything that is no PNG', async ()
   expect(pngSize('')).toBeNull()
 })
 
-test('cellsFor keeps the aspect within 60 x 24 cells', async () => {
-  expect(cellsFor({ width: 867, height: 602 })).toEqual({ columns: 60, rows: 21 })
-  expect(cellsFor({ width: 2000, height: 312 })).toEqual({ columns: 60, rows: 5 })
+test('cellsFor keeps the aspect within 90 x 36 cells and the room the row has', async () => {
+  expect(cellsFor({ width: 867, height: 602 })).toEqual({ columns: 90, rows: 31 })
+  expect(cellsFor({ width: 867, height: 602 }, 60)).toEqual({ columns: 60, rows: 21 })
+  expect(cellsFor({ width: 2000, height: 312 })).toEqual({ columns: 90, rows: 7 })
   expect(cellsFor({ width: 64, height: 64 })).toEqual({ columns: 8, rows: 4 })
   const tall = cellsFor({ width: 400, height: 4000 })
-  expect(tall.rows).toBe(24)
-  expect(tall.columns).toBeLessThanOrEqual(5)
+  expect(tall.rows).toBe(36)
+  expect(tall.columns).toBeLessThanOrEqual(7)
 })
 
 test('pastedImageNumbers and pastedDirCandidates', async () => {
@@ -126,13 +127,15 @@ const userRow = (text: string) => ({
   props: { text, origin: { kind: 'user' }, isExpanded: false } as unknown as RenderPropsOf['UserMessage'],
 }) as const
 
-test('a Read of a PNG shows the picture under its row in Ghostty', async ($, on) => {
+test('a Read of a PNG shows the picture under its row in Ghostty, with a link to open it large', async ($, on) => {
   host(on, GHOSTTY, { '/shots/label.png': LABEL_HEAD })
   const ui = await $.ui.mount({ ...readRow('/shots/label.png'), surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: 'engine row' })).toBeDefined()
   expect(await ui.find({ type: 'Image' })).toMatchObject({
-    props: { source: { file: '/shots/label.png', format: 'png' }, columns: 60, rows: 21 },
+    // The kit's 90-column viewport leaves the row 83 columns beside its indent.
+    props: { source: { file: '/shots/label.png', format: 'png' }, columns: 83, rows: 29 },
   })
+  expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: 'file:///shots/label.png' } })
   await ui.unmount()
 })
 
@@ -235,6 +238,8 @@ test('a Read of a JPEG shows the converted picture; an up-to-date cache is not c
   const { converts } = host(on, GHOSTTY, { '/shots/page.jpg': '/9j/4AAQ', '/shots/old.jpg': '/9j/4AAQ', [cachePathFor('501', '/shots/old.jpg')]: LABEL_HEAD })
   const ui = await $.ui.mount({ ...readRow('/shots/page.jpg'), surface: 'terminal' })
   expect(await ui.find({ type: 'Image' })).toMatchObject({ props: { source: { file: cached, format: 'png' } } })
+  // The link opens the original JPEG, not the converted copy.
+  expect(await ui.find({ type: 'Link' })).toMatchObject({ props: { href: 'file:///shots/page.jpg' } })
   await ui.unmount()
   const again = await $.ui.mount({ ...readRow('/shots/old.jpg'), surface: 'terminal' })
   expect(await again.find({ type: 'Image' })).toBeDefined()

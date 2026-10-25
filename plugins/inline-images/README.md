@@ -14,7 +14,8 @@ Pictures are drawn with the terminal's graphics protocol (kitty), so they appear
 app, VS Code) the mod does nothing at all — no placeholder lines. Force it with
 `CLAUDE_INLINE_IMAGES=1` (or off with `0`).
 
-Size: at most 60 × 24 cells, aspect ratio kept.
+Size: at most 90 × 36 cells and never wider than the terminal, aspect ratio kept. Under each picture an
+`↗ open large` link opens the file in the system viewer (Preview on macOS) with a cmd-click.
 
 ## How it finds pasted pictures
 

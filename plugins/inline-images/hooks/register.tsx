@@ -1,8 +1,8 @@
 // Tested via: claude plugin test plugins/inline-images (hooks/register.test.tsx)
 import type { EngineInterface, Register } from 'claude-code'
 
-const MAX_COLUMNS = 60
-const MAX_ROWS = 24
+const MAX_COLUMNS = 90
+const MAX_ROWS = 36
 
 export type TerminalEnv = {
   override?: string
@@ -45,9 +45,13 @@ export function pngSize(base64: string) {
   return ret.width > 0 && ret.height > 0 ? ret : null
 }
 
-/** Cells for a picture: at most MAX_COLUMNS x MAX_ROWS, aspect kept (a cell is about twice as tall as wide). */
-export function cellsFor(size: { width: number; height: number }) {
-  let columns = Math.min(MAX_COLUMNS, Math.max(8, Math.round(size.width / 10)))
+/**
+ * Cells for a picture: about 8 pixels a column, at most MAX_COLUMNS x MAX_ROWS and the room the row
+ * has, aspect kept (a cell is about twice as tall as wide).
+ */
+export function cellsFor(size: { width: number; height: number }, room = MAX_COLUMNS) {
+  const maxColumns = Math.max(8, Math.min(MAX_COLUMNS, room))
+  let columns = Math.min(maxColumns, Math.max(8, Math.round(size.width / 8)))
   let rows = Math.round((columns * size.height) / size.width / 2)
   if (rows > MAX_ROWS) {
     columns = Math.max(1, Math.round((MAX_ROWS * 2 * size.width) / size.height))
@@ -158,8 +162,11 @@ async function asPng($: EngineInterface, path: string, uid: string) {
   }
 }
 
-/** The picture at `path` as a PNG with the cells to draw it in, or null when it is missing or unreadable. */
-async function picture($: EngineInterface, path: string, uid: string) {
+/**
+ * The picture at `path` as a PNG with the cells to draw it in (within `room` columns), or null when
+ * it is missing or unreadable; `source` is the file itself, which the link under it opens.
+ */
+async function picture($: EngineInterface, path: string, uid: string, room: number) {
   try {
     const png = await asPng($, path, uid)
     if (png === null) {
@@ -167,7 +174,7 @@ async function picture($: EngineInterface, path: string, uid: string) {
     }
     const { base64 } = await $.fs.read(png, { as: 'bytes' })
     const size = pngSize(base64)
-    const ret = size === null ? null : { path: png, ...cellsFor(size) }
+    const ret = size === null ? null : { path: png, source: path, ...cellsFor(size, room) }
     return ret
   } catch {
     return null
@@ -195,17 +202,20 @@ export const register: Register = on => {
       return row
     }
     const resolved = await hostForDraw($)
-    const shown = resolved?.isOn ? await picture($, path, resolved.uid) : null
+    const room = (e.viewport?.columns ?? MAX_COLUMNS) - 7
+    const shown = resolved?.isOn ? await picture($, path, resolved.uid, room) : null
     if (shown === null) {
       return row
     }
-    const { Box, Image } = elements
+    const { Box, Image, Link } = elements
 
+    // The link opens the file in the system viewer (Preview on macOS): Ghostty and kitty on a cmd-click.
     return (
       <Box flexDirection="column">
         {row}
-        <Box marginLeft={5}>
+        <Box marginLeft={5} flexDirection="column">
           <Image source={{ file: shown.path, format: 'png' }} columns={shown.columns} rows={shown.rows} alt={`[${shown.path}]`} />
+          <Link href={`file://${shown.source}`} label="↗ open large" />
         </Box>
       </Box>
     )
@@ -225,14 +235,15 @@ export const register: Register = on => {
     }
     const dirs = pastedDirCandidates(resolved.uid, await $.session.root(), await $.session.id())
     // Claude Code keeps a pasted file's own format (`4.jpg` for a dropped JPEG), so probe each extension.
-    const shown: { path: string; columns: number; rows: number }[] = []
+    const room = (e.viewport?.columns ?? MAX_COLUMNS) - 4
+    const shown: { path: string; source: string; columns: number; rows: number }[] = []
     for (const n of numbers) {
       const candidates = dirs.flatMap(dir => IMAGE_EXTENSIONS.map(ext => `${dir}/${n}.${ext}`))
       for (const path of candidates) {
         if ((await mtimeOf($, path)) === null) {
           continue
         }
-        const found = await picture($, path, resolved.uid)
+        const found = await picture($, path, resolved.uid, room)
         if (found !== null) {
           shown.push(found)
         }
@@ -242,14 +253,15 @@ export const register: Register = on => {
     if (shown.length === 0) {
       return row
     }
-    const { Box, Image } = elements
+    const { Box, Image, Link } = elements
 
     return (
       <Box flexDirection="column">
         {row}
         {shown.map(p => (
-          <Box marginLeft={2}>
+          <Box marginLeft={2} flexDirection="column">
             <Image key={p.path} source={{ file: p.path, format: 'png' }} columns={p.columns} rows={p.rows} alt={`[${p.path}]`} />
+            <Link href={`file://${p.source}`} label="↗ open large" />
           </Box>
         ))}
       </Box>
