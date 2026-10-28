@@ -8,6 +8,7 @@ A [Claude Code](https://claude.com/claude-code) plugin marketplace.
 | [`inline-mermaid`](plugins/inline-mermaid) | Draws Mermaid diagrams right in the transcript: under Claude's replies and under `Read`/`Write`/`Edit` of `.mmd` files and Markdown with mermaid blocks (Ghostty, kitty, WezTerm; needs `mmdc`) |
 | [`time-sense`](plugins/time-sense) | Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was |
 | [`autostart`](plugins/autostart) | Runs the `AUTOSTART.md` of the directory Claude starts in as the session's first prompt, once you have trusted that file with `/autostart` |
+| [`live-log`](plugins/live-log) | Shows the output of Claude's long-running background Bash commands live in a pane beside the chat, including the log files they write to, and tells Claude to run long jobs that way |
 
 ## Install
 
@@ -18,6 +19,7 @@ Type at the prompt of a Claude Code terminal session:
 /plugin install inline-mermaid --marketplace https://gitlab.com/zoones.net/oss/claude.git
 /plugin install time-sense --marketplace https://gitlab.com/zoones.net/oss/claude.git
 /plugin install autostart --marketplace https://gitlab.com/zoones.net/oss/claude.git
+/plugin install live-log --marketplace https://gitlab.com/zoones.net/oss/claude.git
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user: all your sessions). The mod is active
@@ -33,7 +35,7 @@ project is offered the install:
   "extraKnownMarketplaces": {
     "zoones": { "source": { "source": "git", "url": "https://gitlab.com/zoones.net/oss/claude.git" } }
   },
-  "enabledPlugins": { "inline-images@zoones": true, "inline-mermaid@zoones": true, "time-sense@zoones": true, "autostart@zoones": true }
+  "enabledPlugins": { "inline-images@zoones": true, "inline-mermaid@zoones": true, "time-sense@zoones": true, "autostart@zoones": true, "live-log@zoones": true }
 }
 ```
 
@@ -45,6 +47,7 @@ claude plugin test plugins/inline-images
 claude plugin test plugins/inline-mermaid
 claude plugin test plugins/time-sense
 claude plugin test plugins/autostart
+claude plugin test plugins/live-log
 ```
 
 To try a change before pushing, load the folder directly instead of the installed copy:
