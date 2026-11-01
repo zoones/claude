@@ -7,8 +7,11 @@ A Claude Code mod that shows the output of Claude's long-running Bash commands l
   Ctrl+B) gets a tab in the pane, and its output streams in while it runs.
 - If the command writes to a log file (`> build.log 2>&1`, `&>> run.log`, `| tee -a test.log`),
   the pane follows that file too. A relative path counts from a leading `cd <dir> &&`.
-- Tabs at the top: `●` running, `✓` completed, `✗` failed, `■` stopped. A click or the keys `1`–`6`
-  (while the pane has focus) switch between the last six commands.
+- Tabs at the top: `●` running, `✓` completed, `✗` failed, `■` stopped. At most four: running
+  commands always get one, ended ones fill what is left, the rest wait behind `+N`. A click or the
+  keys `1`–`4` (while the pane has focus) switch between them.
+- An ended tab (and one following a file) closes with its `×`, or with **✕ close** (`x`) at the
+  bottom for the one shown; a tab waiting behind `+N` moves up.
 - The wheel or the arrow keys scroll back through the last 2000 lines per command; the tabs and the
   bottom line stay put. At the bottom the pane follows new lines; scrolled up, the bottom line says
   how far (`↑ 40 lines above the end`) and **↓ End** (or `e`) jumps back.

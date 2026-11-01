@@ -7,6 +7,7 @@ const PANE = 'live-log'
 const TITLE = 'Live log'
 const KEEP_LINES = 2000
 const KEEP_TASKS = 20
+const MAX_TABS = 4
 const POLL_MS = 500
 // How long an ended task is still read, for the lines it wrote last.
 const LINGER_MS = 3000
@@ -213,7 +214,33 @@ function elapsed(ms: number) {
 }
 
 const shorten = (text: string, max: number) =>
-  text.length > max ? `${text.slice(0, max - 1)}…` : text
+  text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text
+
+// A followed file never ends by itself, so its tab can always be closed;
+// a command's once it has ended.
+const isClosable = (task: LogTask) =>
+  task.status !== 'running' || task.id.startsWith('file-')
+
+// Which tasks get one of the few tabs: the chosen one, then the running ones,
+// then the ended ones, newest first; shown in the order they started, so a
+// tab does not jump about as others come and go.
+export function pickTabs(list: readonly LogTask[], chosen: string | null, max = MAX_TABS) {
+  const newest = [...list].reverse()
+  const ranked = [
+    ...newest.filter(task => task.id === chosen),
+    ...newest.filter(task => task.id !== chosen && task.status === 'running'),
+    ...newest.filter(task => task.id !== chosen && task.status !== 'running'),
+  ]
+  const picked = new Set(ranked.slice(0, max).map(task => task.id))
+
+  return {
+    tabs: list.filter(task => picked.has(task.id)),
+    hidden: list.length - picked.size,
+  }
+}
+
+// The terminal draws a Button as `[ label ]`.
+const CHROME = 4
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -300,6 +327,7 @@ export const register: Register = on => {
     }
 
     const now = await $.clock.now()
+    const columns = Math.max(20, e.props.bodyColumns)
     const shown = task.current ? [...task.lines, task.current] : task.lines
     const logRows = Math.max(1, e.props.scroll.bodyRows - FRAME_ROWS)
     const back = Math.min(await read($, scrollBack), Math.max(0, shown.length - logRows))
@@ -316,32 +344,65 @@ export const register: Register = on => {
     ]
       .filter(part => part !== undefined)
       .join(' · ')
-    const shownTasks = list.slice(-6)
-    // One row of tabs: each title gets an equal share of the width.
-    const titleRoom = Math.max(
-      6,
-      Math.floor(e.props.bodyColumns / shownTasks.length) - 6,
-    )
+
+    // Every width is counted out, so the row never outgrows the pane: an
+    // equal slot per tab, the `+N` of the hidden ones after them.
+    const { tabs, hidden } = pickTabs(list, task.id)
+    const more = hidden > 0 ? ` +${hidden}` : ''
+    const slot = Math.floor((columns - more.length) / tabs.length)
     const choose = async (id: string) => {
       await update($, selected, () => id)
       await update($, scrollBack, () => 0)
     }
+    const close = async (id: string) => {
+      const left = await update($, tasks, all => all.filter(one => one.id !== id))
+      if (id === task.id) {
+        const next = pickTabs(left, null).tabs.at(-1)
+        await update($, selected, () => next?.id ?? null)
+        await update($, scrollBack, () => 0)
+      }
+    }
+
+    const endLabel = back > 0 ? '↓ End' : '↓ live'
+    const canClose = isClosable(task)
+    const buttons = endLabel.length + CHROME + (canClose ? '✕ close'.length + CHROME + 1 : 0)
+    const infoWidth = Math.max(1, columns - buttons - 1)
 
     // The pane would scroll its whole tree, tabs and footer included; this
     // hook draws exactly the body's rows instead and moves its own window
     // (`ui.scroll` below), so the tabs stay at the top and the footer at the
     // bottom.
     return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" flexWrap="nowrap">
-          {shownTasks.map((one, i) => (
-            <Button
-              key={`task-${one.id}`}
-              hotkey={String(i + 1)}
-              label={`${MARK[one.status]} ${shorten(one.title, titleRoom)}`}
-              onPress={() => choose(one.id)}
-            />
-          ))}
+      <Box flexDirection="column" width={columns}>
+        <Box flexDirection="row" flexWrap="nowrap" width={columns}>
+          {tabs.map((one, i) => {
+            const hasClose = isClosable(one)
+            const room = slot - CHROME - 1 - (hasClose ? 2 : 0)
+            const label = shorten(`${i + 1} ${MARK[one.status]} ${one.title}`, room)
+
+            return (
+              <Box key={`slot-${one.id}`} width={slot} flexShrink={0} flexWrap="nowrap">
+                <Button
+                  key={`task-${one.id}`}
+                  hotkey={String(i + 1)}
+                  variant={one.id === task.id ? 'primary' : undefined}
+                  dimColor={one.id !== task.id}
+                  label={label}
+                  onPress={() => choose(one.id)}
+                />
+                {hasClose && (
+                  <Button
+                    key={`close-${one.id}`}
+                    plain
+                    dimColor
+                    label="×"
+                    onPress={() => close(one.id)}
+                  />
+                )}
+              </Box>
+            )
+          })}
+          {more && <Text dimColor>{more}</Text>}
         </Box>
         {Array.from({ length: Math.max(0, blank) }, (_, i) => (
           <Text key={`blank-${i}`}> </Text>
@@ -352,16 +413,19 @@ export const register: Register = on => {
             {line === '' ? ' ' : line}
           </Text>
         ))}
-        <Box flexDirection="row" flexWrap="nowrap">
-          <Box flexGrow={1} flexShrink={1}>
+        <Box flexDirection="row" flexWrap="nowrap" width={columns}>
+          <Box width={infoWidth} flexShrink={0}>
             <Text dimColor wrap="truncate-end">
               {info}
             </Text>
           </Box>
+          {canClose && (
+            <Button key="close" hotkey="x" label="✕ close" onPress={() => close(task.id)} />
+          )}
           <Button
             key="end"
             hotkey="e"
-            label={back > 0 ? '↓ End' : '↓ following'}
+            label={endLabel}
             onPress={() => update($, scrollBack, () => 0)}
           />
         </Box>
