@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import type { FoundElement } from 'claude-code/testing'
+import type { FoundElement, TestBody } from 'claude-code/testing'
 
 import { logFiles, pickTabs } from './register'
 
@@ -160,5 +160,67 @@ test('seven commands: four tabs within the pane width, and × closes an ended on
   await ui.press({ key: 'close-b7' })
   const after = await keyed(ui, 'Button', 'task-')
   expect(after.map(one => one.key)).toEqual(['task-b3', 'task-b4', 'task-b5', 'task-b6'])
+  await ui.unmount()
+})
+
+/** The engine beneath the plugin, for one background command `b1`. */
+async function oneCommand(...[$, on]: Parameters<TestBody>) {
+  const clock = mock.clock(on, { now: 0 })
+  on('command.register', () => ({ value: { command: 'live-log' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/p' }))
+  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'sleep 300', description: 'Sleep', run_in_background: true })
+
+  return clock
+}
+
+test('a command Claude stops gets no notice: the stop itself ends its tab', async ($, on) => {
+  await oneCommand($, on)
+  await $.tool.call({ tool: 'TaskStop', task_id: 'b1' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(String((await keyed(ui, 'Button', 'task-'))[0]?.props.label)).toContain('■')
+  expect((await keyed(ui, 'Button', 'close-')).map(one => one.key)).toEqual(['close-b1'])
+  await ui.unmount()
+})
+
+const ran = (exitCode: number, stdout: string) => ({
+  exitCode,
+  stdout,
+  stderr: '',
+  isStdoutTruncated: false,
+  isStderrTruncated: false,
+})
+
+test('a command no process writes any more ends, and a later notice says how', async ($, on) => {
+  const output = '/tmp/claude-501/p/s/tasks/b1.output'
+  let isAlive = true
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'lsof') {
+      return { value: ran(isAlive ? 0 : 1, isAlive ? '123\n' : '') }
+    }
+    return { value: ran(0, `${output}\n`) }
+  })
+  on('fs.stat', () => {
+    throw new Error('ENOENT')
+  })
+  const clock = await oneCommand($, on)
+  await clock.advance(4000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /running/ }))?.text).toContain('running')
+
+  isAlive = false
+  await clock.advance(4000)
+  expect(String((await keyed(ui, 'Button', 'task-'))[0]?.props.label)).toContain('○')
+  expect((await keyed(ui, 'Button', 'close-')).map(one => one.key)).toEqual(['close-b1'])
+
+  await $.prompt.submit(
+    notice('<task-notification><task-id>b1</task-id><status>completed</status><summary>done fine</summary></task-notification>'),
+  )
+  expect((await ui.find({ type: 'Text', text: /done fine/ }))?.text).toContain('done fine')
   await ui.unmount()
 })

@@ -12,6 +12,9 @@ const POLL_MS = 500
 // How long an ended task is still read, for the lines it wrote last.
 const LINGER_MS = 3000
 const CHUNK_BYTES = 1024 * 1024
+// How often a running command is checked for a process still writing its
+// output, and how long after its start the first check waits.
+const ALIVE_MS = 3000
 
 // Change the tag when LogTask's fields change: it declines what an earlier
 // version stored, which outlives a reload.
@@ -94,6 +97,23 @@ async function readNew($: EngineInterface, file: LogFile) {
   }
 }
 
+// Whether a command still runs: some process holds its output file open.
+// The engine itself does not, and it sends no notice for a stopped command.
+// Undefined when `lsof` cannot tell.
+async function isWritten($: EngineInterface, path: string) {
+  const held = await $.process
+    .run(['lsof', '-t', path], { timeoutMs: 5000 })
+    .catch(() => undefined)
+  if (!held || held.exitCode > 1) return undefined
+
+  return held.stdout.trim() !== ''
+}
+
+const outputPath = (task: LogTask) =>
+  task.files.find(file => file.path.endsWith(`/tasks/${task.id}.output`))?.path
+
+const checkedAt = new Map<string, number>()
+
 let isPolling = false
 
 async function poll($: EngineInterface) {
@@ -106,6 +126,18 @@ async function poll($: EngineInterface) {
     for (const task of list) {
       const isLive = task.status === 'running' || now - (task.endedAt ?? 0) < LINGER_MS
       if (!isLive) continue
+
+      let ended: Partial<LogTask> = {}
+      const output = outputPath(task)
+      if (
+        task.status === 'running' &&
+        output &&
+        now - task.startedAt >= ALIVE_MS &&
+        now - (checkedAt.get(task.id) ?? 0) >= ALIVE_MS
+      ) {
+        checkedAt.set(task.id, now)
+        if ((await isWritten($, output)) === false) ended = { status: 'ended', endedAt: now }
+      }
 
       let files = task.files
       if (task.outputOf) {
@@ -126,10 +158,11 @@ async function poll($: EngineInterface) {
         return { ...file, offset: got.offset }
       })
       const clean = (line: string) => lastSegment(line.replace(ESCAPES, ''))
-      if (!isMoved && clean(current) === task.current) continue
+      if (!isMoved && clean(current) === task.current && !ended.status) continue
 
       changes.set(task.id, {
         ...task,
+        ...ended,
         outputOf: files.length > task.files.length ? undefined : task.outputOf,
         files,
         lines: [...task.lines, ...lines.map(clean)].slice(-KEEP_LINES),
@@ -137,7 +170,17 @@ async function poll($: EngineInterface) {
       })
     }
     if (changes.size > 0) {
-      await update($, tasks, all => all.map(task => changes.get(task.id) ?? task))
+      // A notice that came in meanwhile keeps the status it set.
+      await update($, tasks, all =>
+        all.map(task => {
+          const change = changes.get(task.id)
+          if (!change) return task
+
+          return task.status === 'running'
+            ? change
+            : { ...change, status: task.status, summary: task.summary, endedAt: task.endedAt }
+        }),
+      )
     }
   } catch {
     // A file vanished mid-read or the like: the next poll tries again.
@@ -171,6 +214,17 @@ async function track(
   }
 }
 
+async function markStopped($: EngineInterface, id: string) {
+  const endedAt = await $.clock.now()
+  await update($, tasks, list =>
+    list.map(task =>
+      task.id === id && (task.status === 'running' || task.status === 'ended')
+        ? { ...task, status: 'killed', endedAt: task.endedAt ?? endedAt }
+        : task,
+    ),
+  )
+}
+
 async function markEnded($: EngineInterface, text: string) {
   const ended =
     /<task-id>([\w-]+)<\/task-id>[\s\S]*?<status>(\w+)<\/status>(?:[\s\S]*?<summary>([\s\S]*?)<\/summary>)?/g
@@ -180,8 +234,9 @@ async function markEnded($: EngineInterface, text: string) {
       status === 'completed' || status === 'killed' ? status : 'failed'
     await update($, tasks, list =>
       list.map(task =>
-        task.id === id && task.status === 'running'
-          ? { ...task, status: final, summary, endedAt }
+        // `ended` is the guess of a poll: the notice knows better.
+        task.id === id && (task.status === 'running' || task.status === 'ended')
+          ? { ...task, status: final, summary, endedAt: task.endedAt ?? endedAt }
           : task,
       ),
     )
@@ -204,6 +259,7 @@ const MARK: Record<LogTask['status'], string> = {
   completed: '✓',
   failed: '✗',
   killed: '■',
+  ended: '○',
 }
 
 function elapsed(ms: number) {
@@ -282,6 +338,15 @@ export const register: Register = on => {
       outputOf: id,
       paths: logFiles(e.command, cwd),
     }).catch(() => undefined)
+
+    return ran
+  })
+
+  // A stopped command gets no notice: the stop itself ends its tab.
+  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
+    const ran = await next(e)
+    const id = e.task_id ?? e.shell_id
+    if (id && ran.result && !ran.isError) await markStopped($, id).catch(() => undefined)
 
     return ran
   })

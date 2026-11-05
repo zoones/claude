@@ -5,7 +5,8 @@ export type LogTask = {
   title: string
   // The background task whose output file is still to be found.
   outputOf?: string
-  status: 'running' | 'completed' | 'failed' | 'killed'
+  // `ended`: no process writes its output any more, and no notice said how.
+  status: 'running' | 'completed' | 'failed' | 'killed' | 'ended'
   summary?: string
   startedAt: number
   endedAt?: number
