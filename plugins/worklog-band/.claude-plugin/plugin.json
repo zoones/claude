@@ -1,0 +1,29 @@
+{
+  "name": "worklog-band",
+  "version": "0.2.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Shows this session's running worklog interval above the prompt: switch or rebook its category, stop it (drives your wl command)",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "wl": {
+      "type": "string",
+      "title": "wl command",
+      "description": "Path to the wl command that books the worklog. A relative path counts from the session's project root (e.g. bin/wl); where it is not executable the band stays hidden. Empty = band off.",
+      "default": ""
+    },
+    "log": {
+      "type": "string",
+      "title": "Worklog file",
+      "description": "The file wl writes, one line per entry: ISO_TIMESTAMP|SESSION|CATEGORY|comment. ~ is your home folder.",
+      "default": "~/.worklog.log"
+    },
+    "categories": {
+      "type": "string",
+      "title": "Categories",
+      "description": "The categories wl takes, comma-separated, in hotkey order (1-9): CATEGORY or CATEGORY=Label or CATEGORY=Label|Short. The band's button shows Label, the picker row Short.",
+      "default": ""
+    }
+  }
+}
