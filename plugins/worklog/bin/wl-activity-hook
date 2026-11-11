@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# PostToolUse + Stop hook: record that THIS session was working at this moment.
+#
+# `wl stop` reads the stamp to close an interval at the last real activity instead of at the
+# moment somebody remembered to type "stop" — the log is a declaration, and a declared end is
+# trusted by /worktime and by the booking import without ever being re-examined, so a late stop
+# silently bills idle time. See bin/wl.
+#
+# Registered on BOTH events on purpose: PostToolUse covers work with tools, Stop covers a turn
+# that produced only an answer (design discussion, review) — otherwise that conversation time
+# would be clipped away as idle. The user's PROMPT is deliberately NOT stamped: the prompt that
+# asks for the stop would then be the freshest activity and the clip could never engage, which
+# is the exact bug this whole mechanism exists to prevent.
+#
+# Runs after every tool call: no `set -e`, one `date` fork, and always exit 0 — a hook must
+# never fail or slow down the call it follows.
+
+# shellcheck source=_wl_session.sh
+. "${BASH_SOURCE[0]%/*}/_wl_session.sh" 2>/dev/null || exit 0
+
+DIR=$(wlActivityDir)
+
+tag="${CLAUDE_CODE_SESSION_ID:-}"
+if [ -z "$tag" ]; then
+  tag=$(wlSessionTag "$(cat 2>/dev/null)")
+else
+  tag=$(wlSessionTag)
+fi
+
+[ -d "$DIR" ] || mkdir -p "$DIR" 2>/dev/null || exit 0
+
+# epoch|iso: the epoch is what `wl stop` computes the end from (activity + reading tail); the ISO
+# string is for a human reading the file. Written via a temp file — a reader hitting the moment
+# between truncate and write would otherwise see a half-line and stamp a broken timestamp.
+tmp="$DIR/.$tag.$$"
+if date +"%s|%FT%T%z" > "$tmp" 2>/dev/null; then
+  mv -f "$tmp" "$DIR/$tag" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+else
+  rm -f "$tmp" 2>/dev/null
+fi
+
+exit 0

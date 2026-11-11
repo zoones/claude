@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# SessionStart hook: keeps stable entry points to this plugin's commands in ~/.claude/worklog/bin —
+# for everything that runs OUTSIDE Claude's Bash tool and therefore does not have the plugin's bin/
+# on its PATH: a status line script (wl-statusline), a plain terminal (wl, via PATH or an alias).
+#
+# The plugin's own folder changes with every update, so the shims are rewritten on each session
+# start to point at the version that is running. Never fails the session: always exit 0.
+
+root="${CLAUDE_PLUGIN_ROOT:-$(cd "${BASH_SOURCE[0]%/*}/.." 2>/dev/null && pwd)}"
+dir="$HOME/.claude/worklog/bin"
+mkdir -p "$dir" 2>/dev/null || exit 0
+
+for cmd in wl wl-statusline gather-worktime.sh; do
+  target="$root/bin/$cmd"
+  [ -x "$target" ] || continue
+  shim="$dir/$cmd"
+  content=$(printf '#!/usr/bin/env bash\n# Written by the worklog plugin on session start — points at the installed version.\nexec "%s" "$@"\n' "$target")
+  # Rewrite only on change: a status line reads this every few seconds.
+  if [ "$(cat "$shim" 2>/dev/null)" != "$content" ]; then
+    tmp="$shim.$$"
+    printf '%s\n' "$content" > "$tmp" 2>/dev/null && chmod 755 "$tmp" 2>/dev/null && mv -f "$tmp" "$shim" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
+  fi
+done
+exit 0

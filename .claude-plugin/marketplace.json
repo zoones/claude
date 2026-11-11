@@ -33,9 +33,9 @@
       "description": "Shows the output of Claude's long-running background Bash commands live in a pane beside the chat, including the log files they write to, and tells Claude to run long jobs that way"
     },
     {
-      "name": "worklog-band",
-      "source": "./plugins/worklog-band",
-      "description": "Shows this session's running worklog interval above the prompt: switch or rebook its category, stop it (drives your own wl command)"
+      "name": "worklog",
+      "source": "./plugins/worklog",
+      "description": "Book your working time per session: the wl command, a band above the prompt to switch or stop, activity stamps so a stop never bills idle time, and /worktime to turn the log, commits and your keystrokes into billable intervals"
     }
   ]
 }

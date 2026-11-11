@@ -1,0 +1,18 @@
+{
+  "description": "worklog: the band above the prompt, the session's activity stamps for wl stop, the active category in the model's context, stable shims in ~/.claude/worklog/bin",
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/wl-shims\"", "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/wl-context-hook\"", "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/wl-activity-hook\"", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/wl-activity-hook\"", "timeout": 5 } ] }
+    ]
+  }
+}

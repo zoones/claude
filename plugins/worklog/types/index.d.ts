@@ -3,7 +3,7 @@ export type Running = { category: string; comment: string; since: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'worklog-band': {
+    worklog: {
       running: Running | null
       /** True while a `wl` call started from the band runs; the band ignores presses meanwhile. */
       isBusy: boolean

@@ -1,13 +1,13 @@
-// Tested via: claude plugin test plugins/worklog-band (hooks/register.test.tsx)
+// Tested via: claude plugin test plugins/worklog (hooks/register.test.tsx)
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Running } from '../types'
 
-const running = atom({ plugin: 'worklog-band', key: 'running' } as const, null)
-const isBusy = atom({ plugin: 'worklog-band', key: 'isBusy' } as const, false)
-const isPicking = atom({ plugin: 'worklog-band', key: 'isPicking' } as const, false)
-const pending = atom({ plugin: 'worklog-band', key: 'pending' } as const, null)
+const running = atom({ plugin: 'worklog', key: 'running' } as const, null)
+const isBusy = atom({ plugin: 'worklog', key: 'isBusy' } as const, false)
+const isPicking = atom({ plugin: 'worklog', key: 'isPicking' } as const, false)
+const pending = atom({ plugin: 'worklog', key: 'pending' } as const, null)
 
 const REFRESH_MS = 15_000
 
@@ -36,15 +36,14 @@ export function parseConfig(json: string): { log: string; categories: Category[]
   return ret
 }
 
-/** The options of this load (`userConfig` in plugin.json); set by `register`. */
-const options = { wl: '', config: '' }
 /** The categories of the worklog configuration, re-read on every refresh. */
 let categories: Category[] = []
 
 /**
- * Where wl and its configuration live; resolved once per load by the first refresh. `wl` null = no
- * wl configured, or not executable from this session's root. Not tied to session.start alone: a
- * resumed session may never raise it.
+ * Where wl and its configuration live; resolved once per load by the first refresh. wl is the
+ * plugin's own (bin/wl); null = not executable, then the band stays hidden. The configuration is
+ * where wl looks for it: WL_CONFIG, else ~/.claude/worklog/config.json. Not tied to session.start
+ * alone: a resumed session may never raise it.
  */
 const where = { isResolved: false, wl: null as string | null, home: '', configPath: '', tag: '' }
 
@@ -82,16 +81,14 @@ function expandHome(path: string, home: string) {
 
 async function resolveWhere($: EngineInterface) {
   where.isResolved = true
-  if (options.wl === '') {
-    return
-  }
   const home = (await $.process.run(['printenv', 'HOME'])).stdout.trim()
-  const wl = expandHome(options.wl, home)
-  const wlPath = wl.startsWith('/') ? wl : `${await $.session.root()}/${wl}`
+  const wlPath = `${$.plugin.root}/bin/wl`
   const hasWl = (await $.process.run(['test', '-x', wlPath])).exitCode === 0
   where.wl = hasWl ? wlPath : null
   where.home = home
-  where.configPath = expandHome(options.config || DEFAULT_CONFIG, home)
+  const configEnv = await $.process.run(['printenv', 'WL_CONFIG'])
+  const configured = configEnv.exitCode === 0 ? configEnv.stdout.trim() : ''
+  where.configPath = expandHome(configured || DEFAULT_CONFIG, home)
   if (hasWl) {
     $.clock.every(REFRESH_MS, () => refresh($))
   }
@@ -187,9 +184,7 @@ async function close($: EngineInterface) {
   await update($, pending, () => null)
 }
 
-export const register: Register = (on, pluginOptions: PluginOptions) => {
-  options.wl = String(pluginOptions.wl ?? '').trim()
-  options.config = String(pluginOptions.config ?? '').trim()
+export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await refresh($)

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# The worklog part of a status line: this session's open interval — "⏱ WL: CATEGORY — comment (since)",
+# "⏸ stopped HH:MM", or "—" with nothing logged today. Reads the status line's JSON on stdin (it
+# carries .session_id) and prints one line with ANSI colours; nothing else.
+#
+# A plugin cannot set the status line, so a status line script of your own calls this — through the
+# stable path the plugin keeps up to date on every session start:
+#   wl_part=$(printf '%s' "$input" | ~/.claude/worklog/bin/wl-statusline)
+# Requires jq.
+
+# shellcheck source=_wl_session.sh
+. "${BASH_SOURCE[0]%/*}/_wl_session.sh"
+
+input=$(cat)
+sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+tag="${sid:0:8}"
+tag="${tag:-cli}"
+log=$(wlLogPath)
+
+# Filter to this tab's session, so concurrent tabs each show their own scope; `parallel` window
+# lines carry their own pseudo-session and never match.
+last=$(grep "^$(date +%F)" "$log" 2>/dev/null | awk -F'|' -v s="$tag" '$2==s' | tail -1)
+if [ -z "$last" ]; then
+  printf '⏱ WL: \033[33m—\033[0m'
+  exit 0
+fi
+cat=$(printf '%s' "$last" | cut -d'|' -f3)
+cmt=$(printf '%s' "$last" | cut -d'|' -f4-)
+since=$(printf '%s' "$last" | cut -d'|' -f1 | cut -dT -f2 | cut -d: -f1-2)
+if [ "$cat" = "STOP" ]; then
+  printf '⏱ WL: \033[33m⏸ stopped %s\033[0m' "$since"
+else
+  printf '⏱ WL: \033[36m%s\033[0m %s(%s)' "$cat" "${cmt:+— ${cmt} }" "$since"
+fi

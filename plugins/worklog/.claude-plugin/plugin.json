@@ -1,0 +1,9 @@
+{
+  "name": "worklog",
+  "version": "1.0.0",
+  "author": { "name": "Mario Ivankovits", "email": "mario.ivankovits@zoones.net" },
+  "license": "MIT",
+  "repository": "https://gitlab.com/zoones.net/oss/claude",
+  "description": "Book your working time per Claude session: the wl command, a band above the prompt to switch or stop, activity stamps so a stop never bills idle time, and /worktime to turn the log, commits and your keystrokes into billable intervals",
+  "types": "./types/index.d.ts"
+}

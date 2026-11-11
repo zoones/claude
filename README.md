@@ -9,7 +9,7 @@ A [Claude Code](https://claude.com/claude-code) plugin marketplace.
 | [`time-sense`](plugins/time-sense) | Gives Claude a sense of time: every prompt carries the current date, time, weekday, time zone and how long ago the previous prompt was |
 | [`autostart`](plugins/autostart) | Runs the `AUTOSTART.md` of the directory Claude starts in as the session's first prompt, once you have trusted that file with `/autostart` |
 | [`live-log`](plugins/live-log) | Shows the output of Claude's long-running background Bash commands live in a pane beside the chat, including the log files they write to, and tells Claude to run long jobs that way |
-| [`worklog-band`](plugins/worklog-band) | Shows this session's running worklog interval above the prompt: switch or rebook its category, or stop it, through your own `wl` command (categories and paths configured per user) |
+| [`worklog`](plugins/worklog) | Book your working time per session: the `wl` command, a band above the prompt to switch or stop, activity stamps so a stop never bills idle time, and `/worktime` to turn the log, commits and your keystrokes into billable intervals (clients and categories configured per user) |
 
 ## Install
 
@@ -21,7 +21,7 @@ Type at the prompt of a Claude Code terminal session:
 /plugin install time-sense --marketplace https://gitlab.com/zoones.net/oss/claude.git
 /plugin install autostart --marketplace https://gitlab.com/zoones.net/oss/claude.git
 /plugin install live-log --marketplace https://gitlab.com/zoones.net/oss/claude.git
-/plugin install worklog-band --marketplace https://gitlab.com/zoones.net/oss/claude.git
+/plugin install worklog --marketplace https://gitlab.com/zoones.net/oss/claude.git
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user: all your sessions). The mod is active
@@ -50,7 +50,8 @@ claude plugin test plugins/inline-mermaid
 claude plugin test plugins/time-sense
 claude plugin test plugins/autostart
 claude plugin test plugins/live-log
-claude plugin test plugins/worklog-band
+claude plugin test plugins/worklog
+plugins/worklog/tests/wl.tests.sh
 ```
 
 To try a change before pushing, load the folder directly instead of the installed copy:

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# UserPromptSubmit hook: inject the active worklog (debitable-scope) context for THIS session
+# into the model's context each turn, with a standing instruction to flag divergence. Scoped
+# per session so concurrent tabs don't clobber each other's active category. See bin/wl — on the
+# Bash tool's PATH while the plugin is enabled, so the model calls it as plain `wl`.
+set -euo pipefail
+
+# The UserPromptSubmit payload arrives as JSON on stdin; .session_id identifies this tab.
+payload=$(cat 2>/dev/null || true)
+# shellcheck source=_wl_session.sh
+. "${BASH_SOURCE[0]%/*}/_wl_session.sh"
+LOG=$(wlLogPath)
+tag=$(wlSessionTag "$payload")
+
+# Deliberately NOT stamping the activity file here: this hook fires BEFORE the turn runs, so
+# the prompt asking for the stop would be the freshest activity and `wl stop` could never clip
+# an idle tail. Turn-level activity is stamped by wl-activity-hook on PostToolUse and Stop.
+
+# This session's last entry today. New format is TS|SESSION|CAT|comment ($2 == tag); legacy
+# 3-field lines ($2 is a category) belong to no session and are correctly ignored here.
+last=$(grep "^$(date +%F)" "$LOG" 2>/dev/null | awk -F'|' -v s="$tag" '$2==s' | tail -1 || true)
+
+if [ -z "$last" ]; then
+  ctx="Worklog: nothing logged for THIS session today. If real task work starts this turn, log its debitable scope via wl (categories: wl config) and state the category."
+else
+  cat=$(printf '%s' "$last" | cut -d'|' -f3)
+  cmt=$(printf '%s' "$last" | cut -d'|' -f4-)
+  since=$(printf '%s' "$last" | cut -d'|' -f1 | cut -dT -f2 | cut -d: -f1-2)
+  if [ "$cat" = "STOP" ]; then
+    ctx="Worklog: THIS session STOPPED since $since. If real task work starts this turn, log its debitable scope via wl and state the category."
+  else
+    ctx="Worklog: active category $cat (${cmt:-no label}, since $since) for THIS session. If the work in this conversation does NOT plausibly belong to $cat, say so and ask the user whether to switch (then run wl <category> \"<label>\"). Do not silently work under a wrong category."
+  fi
+fi
+
+jq -cn --arg ctx "$ctx" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$ctx},suppressOutput:true}'

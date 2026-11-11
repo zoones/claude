@@ -7,12 +7,13 @@ import { findRunning, parseConfig } from './register'
 const TODAY = '2026-10-09'
 const TAG = 'abcdef12'
 const BAND = {
-  plugin: 'worklog-band',
+  plugin: 'worklog',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 40 } as unknown as RenderPropsOf['AbovePrompt'],
 } as const
-const WL = '/repo/bin/wl'
-const OPTIONS = { options: { wl: 'bin/wl' } } as const
+/** The band runs the plugin's own wl — wherever the plugin is installed. */
+const isWl = (argv0: string | undefined) => argv0 !== undefined && argv0.endsWith('/bin/wl')
+const OPTIONS = { options: {} } as const
 /** The worklog configuration wl reads too, at its default place. */
 const CONFIG_PATH = '/home/me/.claude/worklog/config.json'
 const CONFIG = JSON.stringify({
@@ -58,11 +59,13 @@ test('findRunning reads only today\'s last line of the own session', async () =>
 })
 
 /**
- * A host with one wl checkout and a worklog in memory, answering wl as it writes the log:
+ * A host with the plugin's wl and a worklog in memory, answering wl as it writes the log:
  * `stop` appends a STOP line, `amend <cat>` rewrites the last line's category, `<cat> <comment>`
- * appends a new interval. `reads` collects the paths the plugin read.
+ * appends a new interval. `reads` collects the paths the plugin read. `env.WL_CONFIG` stands for
+ * that variable in the environment; `isWlExecutable: false` for a plugin whose wl cannot run.
  */
-function host(on: On, initialLog: string, config: string | null = CONFIG) {
+function host(on: On, initialLog: string, config: string | null = CONFIG,
+              env: { WL_CONFIG?: string; isWlExecutable?: boolean } = {}) {
   const calls: { argv: readonly string[]; env?: Record<string, string> }[] = []
   const toasts: string[] = []
   const reads: string[] = []
@@ -96,10 +99,12 @@ function host(on: On, initialLog: string, config: string | null = CONFIG) {
     switch (e.argv[0]) {
       case 'date':
         return { value: { ...ok, stdout: `${TODAY}\n` } }
-      case 'printenv':
-        return { value: { ...ok, stdout: '/home/me\n' } }
+      case 'printenv': {
+        const value = e.argv[1] === 'HOME' ? '/home/me' : e.argv[1] === 'WL_CONFIG' ? env.WL_CONFIG : undefined
+        return { value: { ...ok, exitCode: value === undefined ? 1 : 0, stdout: value === undefined ? '' : `${value}\n` } }
+      }
       case 'test':
-        return { value: { ...ok, exitCode: e.argv[2] === WL ? 0 : 1, stdout: '' } }
+        return { value: { ...ok, exitCode: isWl(e.argv[2]) && env.isWlExecutable !== false ? 0 : 1, stdout: '' } }
       default: {
         const [, verb = '', arg = '', comment = ''] = e.argv
         if (verb === 'stop') {
@@ -141,8 +146,8 @@ test('the band reads the worklog configuration wl reads, then the log it names, 
   expect(reads.slice(0, 2)).toEqual([CONFIG_PATH, '/home/me/.worklog.log'])
 })
 
-test('the config option points the band at another configuration', { options: { wl: 'bin/wl', config: '~/elsewhere/wl.json' } }, async ($, on) => {
-  const { reads } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`)
+test('WL_CONFIG points the band at another configuration, as it points wl', OPTIONS, async ($, on) => {
+  const { reads } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`, CONFIG, { WL_CONFIG: '~/elsewhere/wl.json' })
   await start($)
   expect(reads).toContain('/home/me/elsewhere/wl.json')
 })
@@ -191,8 +196,8 @@ test('the band shows the running interval and Stop runs wl stop for this session
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await ui.press({ key: 'stop' })
-  const stop = calls.find(c => c.argv[0] === WL)
-  expect(stop?.argv).toEqual([WL, 'stop'])
+  const stop = calls.find(c => isWl(c.argv[0]))
+  expect(stop?.argv.slice(1)).toEqual(['stop'])
   expect(stop?.env).toEqual({ CLAUDE_CODE_SESSION_ID: TAG })
   expect(toasts).toEqual(['wl: stopped OWN at 10:00'])
   expect(await ui.find({ key: 'stop' })).toBeUndefined()
@@ -201,7 +206,7 @@ test('the band shows the running interval and Stop runs wl stop for this session
 })
 
 const wlCalls = (calls: { argv: readonly string[] }[]) =>
-  calls.filter(c => c.argv[0] === WL).map(c => c.argv.slice(1))
+  calls.filter(c => isWl(c.argv[0])).map(c => c.argv.slice(1))
 
 /** The project buttons currently drawn. */
 async function pickRow(ui: { findAll: (q: { type: string }) => Promise<{ text?: string; props: Record<string, unknown> }[]> }) {
@@ -301,20 +306,13 @@ test('no band when this session has nothing running', OPTIONS, async ($, on) => 
   await ui.unmount()
 })
 
-test('no band without a configured wl, and wl is never run', async ($, on) => {
-  const { calls } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`)
+test('no band where the plugin\'s own wl is not executable, and wl is never run', OPTIONS, async ($, on) => {
+  const { calls } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`, CONFIG, { isWlExecutable: false })
   await start($)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.find({ key: 'stop' })).toBeUndefined()
-  expect(calls).toEqual([])
-  await ui.unmount()
-})
-
-test('no band where the configured wl is not executable from this project', { options: { ...OPTIONS.options, wl: 'other/wl' } }, async ($, on) => {
-  const { calls } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`)
-  await start($)
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await ui.find({ key: 'stop' })).toBeUndefined()
-  expect(calls.map(c => c.argv)).toContainEqual(['test', '-x', '/repo/other/wl'])
+  // the plugin's own bin/wl, not one of the project
+  expect(calls.some(c => c.argv[0] === 'test' && isWl(c.argv[2]))).toBe(true)
+  expect(wlCalls(calls)).toEqual([])
   await ui.unmount()
 })

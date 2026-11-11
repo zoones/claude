@@ -1,0 +1,836 @@
+#!/usr/bin/env bash
+# wl — worklog: declare the debitable scope of what you are working on RIGHT NOW.
+#
+# Appends one line to the worklog named in ~/.claude/worklog/config.json (override with WL_CONFIG;
+# the log alone with WL_LOG), which also names the categories — `wl config`. Lines are stamped with the
+# Claude session id (CLAUDE_CODE_SESSION_ID, first 8 chars; override with WL_SESSION; `cli` when
+# run from a plain shell), so concurrent sessions/tabs each keep their own timeline. Within one
+# session each entry opens an interval and implicitly closes that SAME session's previous one;
+# `wl stop` closes this session's interval without opening (break, end of day). Cross-session
+# overlaps are left intact for /worktime to reconcile. /worktime reads this log as its
+# highest-priority evidence.
+#
+# Line format: ISO_TIMESTAMP|SESSION|CATEGORY|comment  (legacy 3-field lines have no session).
+# CATEGORY is either a category or an explicit share split (`ACME=60,OWN=40`, `ACME,OWN`).
+# One more kind, under the pseudo-session `parallel`: FROM_ISO|parallel|PARALLEL|TO_ISO|SESSION|comment.
+#
+#   wl config                         categories, billing scopes and log in use
+#   wl acme "order export"            work booked to the category ACME
+#   wl acme=60,own=40 "cutover"       explicit split per billing scope (adds up to 100)
+#   wl stop [--now|--at|--ago]        close the current interval (break / end of day)
+#   wl amend [-N] [--at T] <cat> [comment]  rebook (and/or re-time) an entry already written
+#   wl <cat> --at T [comment]         an entry that started earlier (after this session's last one)
+#   wl parallel --from T [--to T] [comment]  sessions open in that window share its time
+#   wl                                show today's entries
+#
+# `stop` closes at the last activity of this session (stamped per tool call and per finished turn
+# by wl-activity-hook) plus a short reading tail, not at the moment it is typed — see the comment on the stop branch for
+# why that direction is the dangerous one.
+set -euo pipefail
+
+# Session tag: this tab's own timeline. First 8 chars of the Claude session id; `cli` for a
+# plain shell (single human timeline). Override with WL_SESSION for testing. Shared with the
+# hooks — if the three ever derived it differently, `wl stop` would read an activity file
+# nobody wrote and just report "no activity data".
+# shellcheck source=_wl_session.sh
+. "${BASH_SOURCE[0]%/*}/_wl_session.sh"
+SESSION=$(wlSessionTag)
+
+# The log and the categories come from the configuration (~/.claude/worklog/config.json, override
+# with WL_CONFIG; the log also with WL_LOG) — the script knows no customer.
+CONFIG=$(wlConfigPath)
+LOG=$(wlLogPath)
+mkdir -p "${LOG%/*}" 2>/dev/null || true
+
+# Fills CATEGORIES (" A B "), ALIASES (" X=A ") and SHARE_SCOPES (" S T ") from the configuration —
+# or exits 2 saying what is wrong. Only the commands that take a category need it: stop, show and
+# push must keep working for whoever has no configuration yet.
+CATEGORIES=""
+ALIASES=""
+SHARE_SCOPES=""
+loadConfig() {
+  [ -z "$CATEGORIES" ] || return 0
+  if [ ! -r "$CONFIG" ]; then
+    echo "wl: no configuration at $CONFIG — it names the categories and billing scopes (see: wl config)" >&2
+    exit 2
+  fi
+  local out line name
+  out=$(jq -r '
+    (.categories // {} | keys_unsorted[] | "C " + ascii_upcase),
+    (.categories // {} | to_entries[] | .key as $k | (.value.aliases // [])[] | "A " + ascii_upcase + "=" + ($k | ascii_upcase)),
+    (.scopes // [] | .[] | "S " + ascii_upcase)
+  ' "$CONFIG" 2>/dev/null) || {
+    echo "wl: $CONFIG is not valid JSON" >&2
+    exit 2
+  }
+  CATEGORIES=" "
+  ALIASES=" "
+  SHARE_SCOPES=" "
+  while IFS= read -r line; do
+    name="${line#? }"
+    # The log is |-separated and a split is ,/= separated: a name containing either would write a
+    # line no reader parses back. STOP and PARALLEL are the log's own markers.
+    if ! [[ "${name%%=*}" =~ ^[A-Z0-9_+-]+$ ]] || [ "$name" = STOP ] || [ "$name" = PARALLEL ]; then
+      echo "wl: $CONFIG: '$name' is not usable as a name (A-Z, 0-9, _ + -; not STOP or PARALLEL)" >&2
+      exit 2
+    fi
+    case "$line" in
+      "C "*) CATEGORIES="$CATEGORIES$name " ;;
+      "A "*) ALIASES="$ALIASES$name " ;;
+      "S "*) SHARE_SCOPES="$SHARE_SCOPES$name " ;;
+    esac
+  done <<< "$out"
+  if [ "$CATEGORIES" = " " ]; then
+    echo "wl: $CONFIG names no categories" >&2
+    exit 2
+  fi
+}
+
+# ISO timestamp <-> epoch, BSD (macOS) first, GNU second. Empty output = not a valid stamp.
+isoToEpoch() {
+  date -j -f '%Y-%m-%dT%H:%M:%S%z' "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null || true
+}
+epochToIso() {
+  date -r "$1" +%FT%T%z 2>/dev/null || date -d "@$1" +%FT%T%z 2>/dev/null || true
+}
+
+# An explicit time as `stop --at` and `amend --at` take it, as an ISO timestamp — or exit 2.
+# A bare HH:MM means today; give the date explicitly for an earlier day.
+atToIso() {
+  case "$1" in
+    [0-9][0-9]:[0-9][0-9]) printf '%s' "$(date +%F)T$1:00$(date +%z)" ;;
+    [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) printf '%s' "$(date +%F)T$1$(date +%z)" ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T\ ][0-9][0-9]:[0-9][0-9]) printf '%s' "${1/ /T}:00$(date +%z)" ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][T\ ][0-9][0-9]:[0-9][0-9]:[0-9][0-9]) printf '%s' "${1/ /T}$(date +%z)" ;;
+    *) echo "wl: --at wants [YYYY-MM-DD ]HH:MM[:SS], got '$1'" >&2; exit 2 ;;
+  esac
+}
+
+# What an entry is billed to, in canonical form, or exit 1 when it is not valid: a category of the
+# configuration (or one of its aliases) — master data that knows its split — or an explicit share
+# split for the interval that does not follow any category's usual split: `acme=60,own=40` (percent
+# per billing scope of the configuration, adding up to 100) or `acme,own` (even split). Same
+# all-or-none rule as the import, which takes exactly one of category and shares. Needs loadConfig.
+normalizeTarget() {
+  local cat alias
+  cat=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+  case "$cat" in
+    *,*|*=*) normalizeShares "$cat"; return ;;
+  esac
+  # A name first: the lookups below match within space-separated lists, where "ACME BETA" is a hit.
+  [[ "$cat" =~ ^[A-Z0-9_+-]+$ ]] || return 1
+  case "$ALIASES" in
+    *" $cat="*)
+      alias="${ALIASES#* "$cat"=}"
+      cat="${alias%% *}"
+      ;;
+  esac
+  case "$CATEGORIES" in
+    *" $cat "*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$cat"
+}
+
+# Validates an upper-cased share split and prints it rebuilt from the checked parts, so what is
+# written is exactly what was checked. Refusing here is the point: a split that the import
+# rejects would only surface at push time, long after the day it describes.
+normalizeShares() {
+  local part scope pct frac seen=" " count=0 withPct=0 hundredths=0 out=""
+  local -a parts
+  # A trailing empty field disappears in `read -a`; refuse it explicitly, like a middle one.
+  case "$1" in ,*|*,|*,,*) return 1 ;; esac
+  # read -a splits without globbing (an unquoted `for part in $1` would expand `SS?` to a file).
+  IFS=, read -ra parts <<< "$1"
+  for part in "${parts[@]}"; do
+    scope="${part%%=*}"
+    # A name first: the lookup below matches within a space-separated list, where "ACME BETA" is a hit.
+    [[ "$scope" =~ ^[A-Z0-9_+-]+$ ]] || return 1
+    case "$SHARE_SCOPES" in *" $scope "*) ;; *) return 1 ;; esac
+    case "$seen" in *" $scope "*) return 1 ;; esac
+    seen="$seen$scope "
+    count=$((count + 1))
+    if [[ "$part" == *=* ]]; then
+      pct="${part#*=}"
+      # Two decimals at most, like a manually entered share. Summing in whole hundredths keeps the
+      # check exact — the server compares the sum to 100 without tolerance.
+      [[ "$pct" =~ ^([0-9]+)([.]([0-9]{1,2}))?$ ]] || return 1
+      frac="${BASH_REMATCH[3]}00"
+      pct=$(( 10#${BASH_REMATCH[1]} * 100 + 10#${frac:0:2} ))
+      [ "$pct" -gt 0 ] || return 1
+      hundredths=$((hundredths + pct))
+      withPct=$((withPct + 1))
+      if [ $((pct % 100)) -eq 0 ]; then
+        out="$out,$scope=$((pct / 100))"
+      else
+        out="$out,$scope=$((pct / 100)).$(printf '%02d' $((pct % 100)) | sed 's/0$//')"
+      fi
+    else
+      out="$out,$scope"
+    fi
+  done
+  # One scope is a category, not a split; a mix of set and unset shares has no defined meaning.
+  [ "$count" -ge 2 ] || return 1
+  [ "$withPct" -eq 0 ] || [ "$withPct" -eq "$count" ] || return 1
+  [ "$withPct" -eq 0 ] || [ "$hundredths" -eq 10000 ] || return 1
+  printf '%s' "${out#,}"
+}
+
+usage() {
+  echo "usage: wl [<category>|<scope>=<pct>,...|stop|amend|parallel|config|show|push|test|booked] [comment]   (categories: wl config)" >&2
+  exit 2
+}
+
+case "${1:-show}" in
+  help|-h|--help)
+    cat <<'EOF'
+wl — worklog: declare the debitable scope of what you are working on RIGHT NOW.
+
+  wl config                      the categories, billing scopes and log in use (or an example)
+  wl acme "order export"         work booked to the category ACME (categories: wl config)
+  wl acme=60,own=40 "cutover"    explicit split for work that follows no category's usual split:
+                                 percent per billing scope, adding up to 100
+  wl acme,own "joint fix"        ... the same scopes split evenly
+  wl stop                        close the current interval (break / end of day)
+  wl stop --now                  ... at the current second instead of the last activity
+  wl stop --at 20:28             ... at an explicit time ([YYYY-MM-DD ]HH:MM[:SS])
+  wl stop --ago 20m              ... N minutes/hours back (Nm or Nh)
+  wl                             show today's entries
+  wl push intervals.json         send /worktime's intervals to Zoones (idempotent; needs ZOONES_API_TOKEN)
+  wl test                        check URL, token and activity type with an empty push
+  wl booked [FROM [TO]]          what Zoones already has for those days (YYYY-MM-DD, default today),
+                                 by start day, hand entries included — [manual] vs [wl], billed, struck out
+
+  wl amend acme                  rebook this session's LAST entry to ACME, keep its comment
+  wl amend acme "new label"      ... and replace the comment as well
+  wl amend -2 acme               rebook the entry before it (-N = N-th last of this session)
+  wl amend acme=60,own=40        rebook to an explicit split
+  wl amend -2 --at 09:55         re-time an entry (e.g. a stop written too late), category kept
+  wl amend --at 09:55 acme       ... re-time and rebook in one go
+
+  wl acme --at 14:00 "cutover"   a new entry that started earlier — only after this session's last entry
+  wl parallel --from 14:00 --to 15:12 "VPN"
+                                 this session ran in parallel with the sessions STARTING within that
+                                 window: they share its time evenly, each counted as present for the
+                                 whole window (--to defaults to now); without it /worktime asks about
+                                 overlaps instead of splitting them
+
+`stop` closes at this session's LAST ACTIVITY + at most WL_READ_TAIL (default 180s, reading
+the last answer), not at the moment you type it: wl-activity-hook stamps each tool call and each
+finished turn; any longer idle tail is dropped and reported. This direction matters — /worktime and the Zoones
+import reconstruct a MISSING stop from activity evidence, but a declared end is trusted
+unconditionally, so a late `stop` bills the idle time for good. Without the hook (plain shell,
+hook not installed) it says so and stamps now. Work done OUTSIDE the session (IDE, meeting) is
+invisible to the stamp — use `--now` there; if nothing was stamped since the interval opened
+at all, `stop` keeps the full interval rather than swallowing it.
+
+Lines are tagged with the Claude session id (concurrent tabs = independent timelines).
+Each entry opens an interval and implicitly closes this session's previous one; `stop`
+closes only this session. `amend` rewrites an entry in place — same timestamp, same
+session, so intervals keep their length; it can only reach this session's own lines
+(`stop` lines included when counting back with -N). `amend --at` moves the timestamp too,
+but only between the session's neighbouring entries and never into the future.
+Configuration: ~/.claude/worklog/config.json (override with WL_CONFIG) — categories, billing
+scopes, how /worktime fans a category out to them, and the log file (override with WL_LOG). The
+same file drives the status line, the hooks and the worklog band. /worktime reads the log as
+its highest-priority evidence.
+
+`push` sends a file of intervals to a Zoones instance — the /worktime synthesis, which
+weighs this log against commits, build logs and your own input. The log itself is never
+sent: it records moments, and "until the next line" is how invented hours happen. The
+file is a JSON list of {start, end, category | shares, comment, source}; `shares` maps a
+billing scope id to a percentage ({"ACME": 60, "OWN": 40}, null = even split) for an
+interval that does not follow a category. Safe to repeat — an interval already imported
+(same source + start) is recognised; a changed end, comment or split is written onto that
+entry ("updated") — over a hand edit too — unless it is struck out, its start was moved
+by hand or its period is settled. Configuration is read from
+~/.wow/wl-test.env if that exists,
+otherwise ~/.wow/wl.env (override the whole choice with WL_ENV_FILE, the directory
+with WL_ENV_DIR); anything already exported wins over the file. The TEST file wins on
+purpose — leaving it behind means the real instance gets nothing, which you notice,
+whereas the reverse would file test pushes as real work. `push` prints the target it
+chose. Keys: ZOONES_API_TOKEN (required), ZOONES_URL
+(default http://localhost:28800), ZOONES_ACTIVITY_TYPE (default DEVELOPMENT).
+Intervals that are implausibly long or clash with time already recorded are reported
+for review rather than stored.
+
+`test` makes the same request as `push` with an empty list instead of a file: it proves
+the URL, the token (scope TIME_TRACKING) and the activity type, and books nothing.
+
+`booked` lists your entries in Zoones whose interval starts within the given days — what /worktime
+reads before it proposes anything, so time you entered by hand is left alone rather than met as
+a clash after the push. It reads only your own entries; the token cannot see anyone else's.
+EOF
+    exit 0
+    ;;
+  config)
+    # What applies right now — or, without a configuration, what one looks like.
+    if [ ! -r "$CONFIG" ]; then
+      cat <<EOF
+wl: no configuration at $CONFIG (override with WL_CONFIG). Example:
+
+{
+  "log": "~/.claude/worklog/worklog.log",
+  "scopes": ["ACME", "OWN"],
+  "categories": {
+    "ACME": { "label": "Acme Corp", "short": "Acme", "shares": { "ACME": 1 }, "describe": "work for Acme only" },
+    "OWN":  { "label": "Own", "shares": { "OWN": 1 }, "describe": "not debitable: tooling, infrastructure" },
+    "BOTH": { "label": "Acme + own", "short": "A+O", "aliases": ["A+O"], "shares": { "ACME": 1, "OWN": 1 },
+              "describe": "product work usable by Acme and ourselves", "default": true }
+  },
+  "rounding": { "granularityMinutes": 15, "leftoverTo": "OWN" }
+}
+
+categories: what an entry is booked to (wl <category>), in the order the worklog band offers them;
+scopes: the billing scopes an explicit split names (wl acme=60,own=40); shares: how /worktime fans a
+category out to the scopes; label/short: the band's button and picker row.
+EOF
+      exit 0
+    fi
+    loadConfig
+    echo "config:     $CONFIG"
+    echo "log:        $LOG"
+    echo "categories:${CATEGORIES% }"
+    [ "$ALIASES" = " " ] || echo "aliases:   ${ALIASES% }"
+    echo "scopes:    ${SHARE_SCOPES% }"
+    exit 0
+    ;;
+  show)
+    entries=$(grep "^$(date +%F)" "$LOG" 2>/dev/null || true)
+    if [ -z "$entries" ]; then
+      echo "wl: no entries today ($LOG)"
+      exit 0
+    fi
+    echo "session $SESSION — today (* = this session):"
+    # Mark this session's own lines; legacy 3-field lines ($2 is a category) stay unmarked.
+    printf '%s\n' "$entries" | awk -F'|' -v s="$SESSION" '{ printf "%s %s\n", ($2==s ? "*" : " "), $0 }'
+    exit 0
+    ;;
+  stop|STOP)
+    # Closing at "now" is what makes idle time billable: a declared end is the highest-priority
+    # evidence for /worktime AND for the Zoones import, so unlike a forgotten stop (which those
+    # two repair from activity evidence) a LATE stop is believed forever. Default therefore to
+    # the last activity of this session, stamped by the wl-activity-hook.
+    shift
+    stopIso=""
+    reason=""
+    args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --now)
+          stopIso=$(date +%FT%T%z)
+          reason="--now"
+          shift
+          ;;
+        --at)
+          [ $# -ge 2 ] || usage
+          stopIso=$(atToIso "$2") || exit 2
+          reason="--at $2"
+          shift 2
+          ;;
+        --ago)
+          [ $# -ge 2 ] || usage
+          case "$2" in
+            [0-9]*m) mins="${2%m}" ;;
+            [0-9]*h) mins=$(( ${2%h} * 60 )) ;;
+            *) echo "wl: --ago wants Nm or Nh, got '$2'" >&2; exit 2 ;;
+          esac
+          stopIso=$(epochToIso $(( $(date +%s) - mins * 60 )))
+          reason="--ago $2"
+          shift 2
+          ;;
+        -*)
+          # Never silently demote a mistyped flag to a comment: `wl stop -now` would otherwise
+          # stop at the wrong time AND look like it worked.
+          echo "wl: unknown option '$1' (see wl help)" >&2
+          exit 2
+          ;;
+        *)
+          args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    comment="${args[*]-}"
+
+    nowEpoch=$(date +%s)
+    nowIso=$(date +%FT%T%z)
+    activityDir=$(wlActivityDir)
+    if [ -z "$stopIso" ]; then
+      # Auto: the last stamped activity plus a bounded reading tail — reading the last answer is
+      # work, but never more than the tail. A cap, not a threshold: a threshold booked a whole gap
+      # below it (9 min at a 10-min threshold) and none above it, a one-minute jump in billing.
+      readTail="${WL_READ_TAIL:-180}"
+      case "$readTail" in
+        ''|*[!0-9]*)
+          echo "wl: WL_READ_TAIL must be seconds, got '$readTail' — using 180" >&2
+          readTail=180
+          ;;
+      esac
+      # The session's last entry — an activity stamp OLDER than it means nothing happened in here
+      # since the interval opened (work in the IDE, a meeting): clipping would swallow that work.
+      # Compared on the stamp itself, before the reading tail is added; on the clipped value a stamp
+      # just before the interval start would slip through and book the interval as 0-3 minutes.
+      sessionLastTs=$(awk -F'|' -v s="$SESSION" 'NF>=4 && $2==s {t=$1} END {print t}' "$LOG" 2>/dev/null || true)
+      sessionLastEpoch=""
+      if [ -n "$sessionLastTs" ]; then
+        sessionLastEpoch=$(isoToEpoch "$sessionLastTs")
+      fi
+      actEpoch=""
+      actIso=""
+      if [ -r "$activityDir/$SESSION" ]; then
+        IFS='|' read -r actEpoch actIso < "$activityDir/$SESSION" || true
+      fi
+      case "$actEpoch" in
+        ''|*[!0-9]*)
+          # No stamp: say so rather than silently falling back — a hook that stopped firing
+          # would otherwise look exactly like a session that just started.
+          stopIso="$nowIso"
+          reason="no activity data for this session, stamped now"
+          ;;
+        *)
+          idle=$(( nowEpoch - actEpoch ))
+          if [ -n "$sessionLastEpoch" ] && [ "$actEpoch" -lt "$sessionLastEpoch" ]; then
+            stopIso="$nowIso"
+            reason="last activity precedes this session's last entry (work outside the session?), stamped now"
+          elif [ "$idle" -gt "$readTail" ]; then
+            stopIso=$(epochToIso $(( actEpoch + readTail )))
+            reason="last activity + ${readTail}s reading, $(( (idle - readTail) / 60 )) min idle not booked"
+          else
+            stopIso="$nowIso"
+          fi
+          ;;
+      esac
+    fi
+
+    # Everything below compares EPOCHS, not the ISO strings: around a DST change the same
+    # calendar time carries two different offsets, and a lexicographic compare then orders the
+    # later stamp first — both guards would fail toward over-booking, twice a year.
+    stopEpoch=$(isoToEpoch "$stopIso")
+    if [ -z "$stopEpoch" ]; then
+      # An unparseable stamp is not a small problem: the line opens or closes an interval, and
+      # /worktime cannot place an entry it cannot read.
+      echo "wl: refusing to write an invalid timestamp ('$stopIso') — nothing logged" >&2
+      exit 1
+    fi
+
+    # A typo'd --at (23:47 typed at 20:56) would book three hours nobody worked. The point of
+    # this command is to not over-book, so an end in the future is pulled back to now.
+    if [ "$stopEpoch" -gt "$nowEpoch" ]; then
+      stopIso="$nowIso"
+      stopEpoch="$nowEpoch"
+      reason="requested end is in the future, stamped now"
+    fi
+
+    # An end before this session's own last entry would write a negative interval. Refusing is
+    # worse than over-booking here: over-booking is visible in the log and can be amended.
+    lastTs=$(awk -F'|' -v s="$SESSION" 'NF>=4 && $2==s {t=$1} END {print t}' "$LOG" 2>/dev/null || true)
+    if [ -n "$lastTs" ]; then
+      lastEpoch=$(isoToEpoch "$lastTs")
+      if [ -n "$lastEpoch" ] && [ "$stopEpoch" -lt "$lastEpoch" ]; then
+        stopIso="$nowIso"
+        reason="requested end precedes this session's last entry, stamped now"
+      fi
+    fi
+
+    printf '%s|%s|STOP|%s\n' "$stopIso" "$SESSION" "$comment" >> "$LOG"
+
+    # One file per session accumulates forever otherwise. Here rather than in the per-tool-call
+    # hook: stop runs a handful of times a day, the hook thousands.
+    find "$activityDir" -type f -mtime +14 -delete 2>/dev/null || true
+    if [ -n "$reason" ]; then
+      echo "wl: stopped ($SESSION) at ${stopIso:11:5} — $reason"
+    else
+      echo "wl: stopped ($SESSION) at ${stopIso:11:5}"
+    fi
+    exit 0
+    ;;
+  push|test|booked)
+    # Hand a file of intervals — the /worktime synthesis — to a Zoones instance, which stores them as
+    # work time entries. Idempotent: an interval already imported is recognised by source + start,
+    # so sending the same file again changes nothing.
+    # `test` is the same request with an empty list: an empty import exercises exactly what a push
+    # needs — URL, token, scope and activity type — while booking nothing.
+    # `booked` reads back what is already recorded for a period, manual entries included, so a
+    # synthesis can leave those hours alone instead of learning about them as clashes after the push.
+    mode="$1"
+    intervalsFile="${2:-}"
+    if [ "$mode" = booked ]; then
+      bookedFrom="${2:-$(date +%F)}"
+      bookedTo="${3:-$bookedFrom}"
+      # A real calendar date, and FROM not after TO — a reversed range would come back empty and read
+      # as "nothing booked", which is a real answer.
+      python3 -c 'import datetime, sys; a, b = (datetime.date.fromisoformat(x) for x in sys.argv[1:]); sys.exit(0 if a <= b else 1)' \
+        "$bookedFrom" "$bookedTo" 2>/dev/null || {
+        echo "wl: booked wants YYYY-MM-DD [YYYY-MM-DD] with FROM not after TO, got '$bookedFrom' '$bookedTo'" >&2
+        exit 2
+      }
+    fi
+    if [ "$mode" = push ]; then
+      # The raw log is never pushed: it records moments, and deriving "until the next line" is
+      # exactly what invented the overnight hours. Only a synthesis states durations.
+      if [ -z "$intervalsFile" ]; then
+        echo "wl: push wants a file of intervals — run /worktime to synthesise one from the log." >&2
+        exit 2
+      fi
+      if [ ! -r "$intervalsFile" ]; then
+        echo "wl: cannot read $intervalsFile" >&2
+        exit 2
+      fi
+      # Checked here rather than left to the server: a broken file would otherwise surface as an
+      # HTTP 400 with a Jackson stack trace instead of a line naming the file.
+      python3 -c 'import json, sys; d = json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if isinstance(d, list) else 1)' \
+        "$intervalsFile" 2>/dev/null || {
+        echo "wl: $intervalsFile is not a JSON list of intervals" >&2
+        exit 2
+      }
+    fi
+    # Configuration comes from ~/.wow/, so the token never has to live in a shell profile. The TEST
+    # file wins while it exists: forgetting to remove it means the real instance gets nothing, which
+    # is noticed at once — the other way round would quietly file test pushes as real work. Anything
+    # already exported still wins over both, so a one-off "ZOONES_URL=... wl push" keeps working.
+    WL_ENV_DIR="${WL_ENV_DIR:-$HOME/.wow}"
+    WL_ENV_FILE="${WL_ENV_FILE:-}"
+    if [ -z "$WL_ENV_FILE" ]; then
+      if [ -f "$WL_ENV_DIR/wl-test.env" ]; then
+        WL_ENV_FILE="$WL_ENV_DIR/wl-test.env"
+      elif [ -f "$WL_ENV_DIR/wl.env" ]; then
+        WL_ENV_FILE="$WL_ENV_DIR/wl.env"
+      fi
+    fi
+    if [ -n "$WL_ENV_FILE" ] && [ -f "$WL_ENV_FILE" ]; then
+      # Values already in the environment take precedence: read the file into a subshell's view first,
+      # then let anything preset override it.
+      _preset_url="${ZOONES_URL:-}"
+      _preset_token="${ZOONES_API_TOKEN:-}"
+      _preset_activity="${ZOONES_ACTIVITY_TYPE:-}"
+      # shellcheck disable=SC1090
+      . "$WL_ENV_FILE"
+      [ -n "$_preset_url" ] && ZOONES_URL="$_preset_url"
+      [ -n "$_preset_token" ] && ZOONES_API_TOKEN="$_preset_token"
+      [ -n "$_preset_activity" ] && ZOONES_ACTIVITY_TYPE="$_preset_activity"
+      unset _preset_url _preset_token _preset_activity
+
+      case "$(ls -ld "$WL_ENV_FILE" | cut -c5-10)" in
+        *[rwx]*) echo "wl: NOTE $WL_ENV_FILE holds a token and is readable by others — chmod 600 it." >&2 ;;
+      esac
+    fi
+
+    : "${ZOONES_URL:=http://localhost:28800}"
+    # A URL copied from the browser ends in "/" — joined as is, the path becomes "//ng_api/…" and
+    # the server answers 400.
+    ZOONES_URL="${ZOONES_URL%/}"
+    : "${ZOONES_ACTIVITY_TYPE:=DEVELOPMENT}"
+    if [ -z "${ZOONES_API_TOKEN:-}" ]; then
+      echo "wl: ZOONES_API_TOKEN is not set." >&2
+      echo "    Mint one in Zoones: user menu -> API tokens, scope TIME_TRACKING." >&2
+      echo "    That scope reaches booking and reading back your own work time and nothing else, which is all this" >&2
+      echo "    command needs — a FULL token is refused here on purpose." >&2
+      exit 2
+    fi
+    # Always name the target. Two configurations exist for a reason, and "which instance did that
+    # land in" must never be a question you answer by reading the script.
+    case "$mode" in
+      push) verb="pushing to" ;;
+      test) verb="testing" ;;
+      booked) verb="reading $bookedFrom..$bookedTo from" ;;
+    esac
+    if [ -n "$WL_ENV_FILE" ]; then
+      echo "wl: $verb $ZOONES_URL as $ZOONES_ACTIVITY_TYPE (config: $WL_ENV_FILE)"
+    else
+      echo "wl: $verb $ZOONES_URL as $ZOONES_ACTIVITY_TYPE (config: environment)"
+    fi
+
+    # The status goes on a line of its own after the body: a refused token answers with an empty
+    # body, which on its own says nothing about why. A transport failure (DNS, refused, timeout)
+    # never gets a status at all — curl has already said why on stderr.
+    if [ "$mode" = booked ]; then
+      # The window is matched on the entry's START, with an exclusive upper bound — so the range ends
+      # at midnight AFTER the last day, not at 23:59:59 (which would drop an entry starting then).
+      bookedUntil=$(python3 -c 'import datetime, sys; print(datetime.date.fromisoformat(sys.argv[1]) + datetime.timedelta(days=1))' "$bookedTo")
+      response=$(curl -sS -w '\n%{http_code}' -G \
+        -H "Authorization: Bearer $ZOONES_API_TOKEN" \
+        --data-urlencode "from=${bookedFrom}T00:00:00" \
+        --data-urlencode "to=${bookedUntil}T00:00:00" \
+        "$ZOONES_URL/ng_api/workTimeManager/entries" < /dev/null) || {
+        echo "wl: cannot reach $ZOONES_URL" >&2
+        exit 1
+      }
+    else
+      if [ "$mode" = push ]; then
+        payload=$(cat "$intervalsFile")
+      else
+        payload='[]'
+      fi
+      response=$(printf '%s' "$payload" | curl -sS -w '\n%{http_code}' -X POST \
+        -H "Authorization: Bearer $ZOONES_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data-binary @- \
+        "$ZOONES_URL/ng_api/workTimeManager/entries/commands/importIntervals?activityTypeId=$ZOONES_ACTIVITY_TYPE") || {
+        echo "wl: cannot reach $ZOONES_URL" >&2
+        exit 1
+      }
+    fi
+
+    printf '%s' "$response" | WL_MODE="$mode" python3 -c '
+import json, os, sys
+raw, _, status = sys.stdin.read().rpartition("\n")
+if status in ("401", "403"):
+    sys.exit("wl: token refused (HTTP %s) — it needs scope TIME_TRACKING and must not be revoked or expired." % status)
+try:
+    d = json.loads(raw)
+except ValueError:
+    sys.exit("wl: unexpected answer from Zoones (HTTP %s): %s" % (status, raw[:300]))
+mode = os.environ["WL_MODE"]
+if mode == "booked":
+    if not isinstance(d, list):
+        message = d.get("message", raw[:300]) if isinstance(d, dict) else raw[:300]
+        sys.exit("wl: reading entries failed (HTTP %s): %s" % (status, message))
+    if not d:
+        print("wl: nothing booked in that period")
+        sys.exit(0)
+    from datetime import datetime
+    # The DTOs serialise with @JsonIdentityInfo: an object that appears a second time (the same
+    # billing scope on several entries) comes back as its bare "@id" string. Index every object by
+    # its "@id" in document order, then resolve the string references.
+    byId = {}
+    def index(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("@id"), str):
+                byId[node["@id"]] = node
+            for v in node.values():
+                index(v)
+        elif isinstance(node, list):
+            for v in node:
+                index(v)
+    index(d)
+    def ref(node):
+        return byId.get(node, {}) if isinstance(node, str) else (node or {})
+    total = 0.0
+    for e in sorted(d, key=lambda e: e.get("workStart") or ""):
+        start, end = e.get("workStart") or "", e.get("workEnd") or ""
+        hours = 0.0
+        if start and end:
+            hours = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 3600
+        targets = []
+        for s in e.get("shares") or []:
+            s = ref(s)
+            scope = ref(s.get("scope")).get("scopeId") or "?"
+            targets.append(scope if s.get("share") is None else "%s=%s" % (scope, s["share"]))
+        # The origin tells a pushed synthesis from a hand entry: /worktime has to leave the latter alone.
+        origin = "wl" if (e.get("externalId") or "").startswith("wl:") else "manual"
+        flags = [origin]
+        if start and not end:
+            # a timer: it claims everything after its start, which is why proposals there come back as OVERLAP
+            flags.append("running")
+        if e.get("billed"):
+            flags.append("billed")
+        if e.get("inactive"):
+            flags.append("struck out")
+        else:
+            total += hours
+        print("%s %s-%s %5.2fh  %-22s %s  [%s]" % (start[:10], start[11:16], end[11:16], hours,
+              ",".join(targets) or "-", e.get("comment") or "", ", ".join(flags)))
+    print("wl: %.2fh booked (struck-out entries not counted)" % total)
+    sys.exit(0)
+if not isinstance(d, dict) or "created" not in d:
+    message = d.get("message", raw[:300]) if isinstance(d, dict) else raw[:300]
+    sys.exit("wl: import failed (HTTP %s): %s" % (status, message))
+if mode == "test":
+    print("wl: connection OK — token accepted, activity type exists, nothing booked")
+    sys.exit(0)
+created = d["created"]
+updated = d.get("updated", 0)
+present = d["alreadyPresent"]
+skipped = d.get("skipped") or []
+print("wl: %d imported, %d updated, %d already there, %d need review" % (created, updated, present, len(skipped)))
+for s in skipped:
+    print("    %s: %s" % (s.get("reason"), s.get("description")))
+'
+    exit 0
+    ;;
+  parallel)
+    # Declares that the sessions open within a window ran IN PARALLEL — one person, two tabs, the
+    # attention split between them — so /worktime divides that wall-clock time among them instead of
+    # booking it once per session. Without such a line overlapping sessions are not split, they are
+    # put to the user (see the worktime skill).
+    # Written under the pseudo-session `parallel`: every reader that looks for a session's open
+    # interval filters on the session field, so this line is nobody's interval.
+    # Format: FROM_ISO|parallel|PARALLEL|TO_ISO|DECLARING_SESSION|comment
+    # Who shares: the declaring session and every session that STARTS an interval (a non-STOP entry)
+    # within the window,
+    # each counted as present for the whole window — the other work is often stamped only in short
+    # bursts while it ran throughout. A session already open when the window begins is not a party:
+    # that is the earlier work going on, not the parallel one (move --from if it was).
+    shift
+    fromIso=""
+    toIso=""
+    args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --from)
+          [ $# -ge 2 ] || usage
+          fromIso=$(atToIso "$2") || exit 2
+          shift 2
+          ;;
+        --to)
+          [ $# -ge 2 ] || usage
+          toIso=$(atToIso "$2") || exit 2
+          shift 2
+          ;;
+        -*)
+          echo "wl: unknown option '$1' (see wl help)" >&2
+          exit 2
+          ;;
+        *)
+          args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    if [ -z "$fromIso" ]; then
+      echo "wl: parallel wants --from [YYYY-MM-DD ]HH:MM (and --to, default now)" >&2
+      exit 2
+    fi
+    nowEpoch=$(date +%s)
+    [ -n "$toIso" ] || toIso=$(date +%FT%T%z)
+    fromEpoch=$(isoToEpoch "$fromIso")
+    toEpoch=$(isoToEpoch "$toIso")
+    if [ -z "$fromEpoch" ] || [ -z "$toEpoch" ]; then
+      echo "wl: not a valid time ('$fromIso' / '$toIso') — nothing logged" >&2
+      exit 2
+    fi
+    # Refused, not adjusted: a window that runs backwards or into the future describes no work.
+    if [ "$toEpoch" -le "$fromEpoch" ]; then
+      echo "wl: --to must lie after --from — nothing logged" >&2
+      exit 2
+    fi
+    if [ "$toEpoch" -gt "$nowEpoch" ]; then
+      echo "wl: --to lies in the future — nothing logged" >&2
+      exit 2
+    fi
+    comment="${args[*]-}"
+    printf '%s|parallel|PARALLEL|%s|%s|%s\n' "$fromIso" "$toIso" "$SESSION" "$comment" >> "$LOG"
+    echo "wl: parallel ${fromIso:11:5}-${toIso:11:5} — $SESSION shares it with the sessions starting within it${comment:+ ($comment)}"
+    exit 0
+    ;;
+  amend)
+    # Rebook an entry that is already written: same timestamp and session, new category
+    # (and comment). Only THIS session's own lines are reachable, counted from the end:
+    # no -N = the last one, -2 = the one before it, ...
+    # --at re-times the line instead of (or together with) rebooking it — the way to correct a
+    # stop written too late without editing the log by hand.
+    shift
+    back=1
+    if [[ "${1:-}" =~ ^-([1-9][0-9]*)$ ]]; then
+      back="${BASH_REMATCH[1]}"
+      shift
+    fi
+    atIso=""
+    if [ "${1:-}" = "--at" ]; then
+      [ $# -ge 2 ] || usage
+      atIso=$(atToIso "$2") || exit 2
+      shift 2
+    fi
+    CAT=""
+    if [ $# -ge 1 ]; then
+      loadConfig
+      CAT=$(normalizeTarget "$1") || usage
+      shift
+    elif [ -z "$atIso" ]; then
+      usage
+    fi
+    [ -s "$LOG" ] || { echo "wl: no worklog to amend ($LOG)" >&2; exit 1; }
+
+    lineNo=$(awk -F'|' -v s="$SESSION" -v back="$back" \
+                 'NF>=4 && $2==s {n[++c]=NR} END {if (c>=back) print n[c-back+1]}' "$LOG")
+    if [ -z "$lineNo" ]; then
+      if [ "$back" -eq 1 ]; then
+        echo "wl: session $SESSION has no entry to amend in $LOG" >&2
+      else
+        echo "wl: session $SESSION has fewer than $back entries in $LOG" >&2
+      fi
+      exit 1
+    fi
+
+    old=$(awk -v l="$lineNo" 'NR==l' "$LOG")
+    # Comment omitted = keep the existing one; the comment itself may contain '|'.
+    comment=$(printf '%s' "$old" | cut -d'|' -f4-)
+    [ $# -eq 0 ] || comment="$*"
+    # Category omitted (only with --at) = keep it — a STOP line stays a STOP.
+    [ -n "$CAT" ] || CAT=$(printf '%s' "$old" | cut -d'|' -f3)
+    stamp=$(printf '%s' "$old" | cut -d'|' -f1)
+
+    if [ -n "$atIso" ]; then
+      # Every guard refuses rather than adjusts: the time was asked for explicitly, and moving a
+      # line silently to some other time would be a second, unrequested correction.
+      atEpoch=$(isoToEpoch "$atIso")
+      if [ -z "$atEpoch" ]; then
+        echo "wl: '$atIso' is not a valid time — nothing changed" >&2
+        exit 2
+      fi
+      if [ "$atEpoch" -gt "$(date +%s)" ]; then
+        echo "wl: --at lies in the future — nothing changed" >&2
+        exit 2
+      fi
+      # The line must stay between its neighbours of THIS session, or an interval turns negative.
+      prevTs=$(awk -F'|' -v s="$SESSION" -v l="$lineNo" 'NF>=4 && $2==s && NR<l {t=$1} END {print t}' "$LOG")
+      nextTs=$(awk -F'|' -v s="$SESSION" -v l="$lineNo" 'NF>=4 && $2==s && NR>l {print $1; exit}' "$LOG")
+      if [ -n "$prevTs" ] && [ "$atEpoch" -lt "$(isoToEpoch "$prevTs")" ]; then
+        echo "wl: --at precedes this session's previous entry (${prevTs:11:5}) — nothing changed" >&2
+        exit 2
+      fi
+      if [ -n "$nextTs" ] && [ "$atEpoch" -gt "$(isoToEpoch "$nextTs")" ]; then
+        echo "wl: --at follows this session's next entry (${nextTs:11:5}) — nothing changed" >&2
+        exit 2
+      fi
+      stamp="$atIso"
+    fi
+    new="$stamp|$SESSION|$CAT|$comment"
+
+    perm=$(stat -f '%Lp' "$LOG" 2>/dev/null || stat -c '%a' "$LOG" 2>/dev/null || echo 644)
+    tmp=$(mktemp "${LOG}.XXXXXX")
+    WL_NEW_LINE="$new" awk -v l="$lineNo" 'NR==l {print ENVIRON["WL_NEW_LINE"]; next} {print}' "$LOG" > "$tmp"
+    chmod "$perm" "$tmp"
+    mv "$tmp" "$LOG"
+
+    echo "wl: amended line $lineNo ($SESSION)"
+    echo "  - $old"
+    echo "  + $new"
+    exit 0
+    ;;
+esac
+
+loadConfig
+CAT=$(normalizeTarget "$1") || usage
+shift
+
+# --at: the switch happened earlier than now ("since 14:00 this is ACME"). Only forward of this
+# session's last entry — the log stays in order per session, which every reader relies on ("the
+# session's last line is its open interval"); an earlier point is `amend --at`'s job. Refused
+# rather than adjusted, like `amend --at`: the time was asked for explicitly.
+stamp=$(date +%FT%T%z)
+atIso=""
+if [ "${1:-}" = "--at" ]; then
+  [ $# -ge 2 ] || usage
+  atIso=$(atToIso "$2") || exit 2
+  shift 2
+  atEpoch=$(isoToEpoch "$atIso")
+  if [ -z "$atEpoch" ]; then
+    echo "wl: '$atIso' is not a valid time — nothing logged" >&2
+    exit 2
+  fi
+  if [ "$atEpoch" -gt "$(date +%s)" ]; then
+    echo "wl: --at lies in the future — nothing logged" >&2
+    exit 2
+  fi
+  lastTs=$(awk -F'|' -v s="$SESSION" 'NF>=4 && $2==s {t=$1} END {print t}' "$LOG" 2>/dev/null || true)
+  if [ -n "$lastTs" ] && [ "$atEpoch" -lt "$(isoToEpoch "$lastTs")" ]; then
+    echo "wl: --at precedes this session's last entry (${lastTs:11:5}) — nothing logged (to move that entry: wl amend --at)" >&2
+    exit 2
+  fi
+  stamp="$atIso"
+fi
+
+printf '%s|%s|%s|%s\n' "$stamp" "$SESSION" "$CAT" "$*" >> "$LOG"
+echo "wl: $CAT — $* ($SESSION${atIso:+, since ${stamp:11:5}})"
