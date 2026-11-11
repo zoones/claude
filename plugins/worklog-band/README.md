@@ -15,8 +15,8 @@ you change or stop it without typing `wl`.
 - Keyboard: `ctrl+x tab` focuses the band (the category button first), Enter opens the row, then
   `1`–`9` pick a category in configured order, `u` / `f` (rebook / continue), `a` (cancel). Esc returns to the prompt.
 
-The band reads the worklog every 15 s and after each turn. Where `wl` is not configured, or not
-executable from the session's project, it stays hidden.
+The band reads the worklog every 15 s and after each turn. Where `wl` is not configured, not
+executable from the session's project, or there is no worklog configuration, it stays hidden.
 
 ## What `wl` has to do
 
@@ -30,27 +30,41 @@ characters in `CLAUDE_CODE_SESSION_ID`:
 | `wl stop` | end the running interval |
 
 Its first output line is shown as a toast. The worklog file has one line per entry:
-`ISO_TIMESTAMP|SESSION|CATEGORY|comment`, `STOP` as category for a stop.
+`ISO_TIMESTAMP|SESSION|CATEGORY|comment`, `STOP` as category for a stop. Lines of other sessions —
+including `wl parallel`'s window lines under the pseudo-session `parallel` — are ignored.
 
 ## Configure
 
-Three options, set in `/config` or in the `pluginConfigs` of your settings:
+The categories and the log come from the **worklog configuration** that `wl` reads as well, so the
+band always offers exactly what `wl` accepts — `~/.claude/worklog/config.json`:
+
+```json
+{
+  "log": "~/.claude/worklog/worklog.log",
+  "categories": {
+    "ACME": { "label": "Acme Corp", "short": "Acme" },
+    "BETA": { "label": "Beta Ltd", "short": "Beta" },
+    "OWN":  { "label": "Own" }
+  }
+}
+```
+
+Categories in hotkey order (1–9); `label` is shown on the button, `short` in the picker row (both
+default to the name). Other keys (`scopes`, `shares`, …) belong to `wl` and are ignored here. Without
+the file — or with a broken one — the band stays hidden. It is re-read on every refresh.
+
+Two plugin options, set in `/config` or in the `pluginConfigs` of your settings:
 
 | Option | Meaning | Default |
 |---|---|---|
 | `wl` | path to the `wl` command; relative = from the session's project root | empty (band off) |
-| `log` | the worklog file `wl` writes, `~` allowed | `~/.worklog.log` |
-| `categories` | comma-separated, in hotkey order: `CATEGORY`, `CATEGORY=Label` or `CATEGORY=Label\|Short` (Label on the button, Short in the row) | empty |
+| `config` | the worklog configuration, `~` allowed | `~/.claude/worklog/config.json` |
 
 ```json
 {
   "pluginConfigs": {
     "worklog-band@zoones": {
-      "options": {
-        "wl": "bin/wl",
-        "log": "~/.worklog.log",
-        "categories": "ACME=Acme Corp|Acme, BETA=Beta Ltd|Beta, OWN=Own"
-      }
+      "options": { "wl": "bin/wl" }
     }
   }
 }

@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, RenderPropsOf } from 'claude-code'
 
-import { findRunning, parseCategories } from './register'
+import { findRunning, parseConfig } from './register'
 
 const TODAY = '2026-10-09'
 const TAG = 'abcdef12'
@@ -12,23 +12,37 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 40 } as unknown as RenderPropsOf['AbovePrompt'],
 } as const
 const WL = '/repo/bin/wl'
-const OPTIONS = {
-  options: {
-    wl: 'bin/wl',
-    log: '~/.worklog.log',
-    categories: 'ACME, BETA, CLIENTS=Clients (Acme+Beta)|Clients, CLIENTS+OWN=Clients + own|C+O, OWN=Own',
+const OPTIONS = { options: { wl: 'bin/wl' } } as const
+/** The worklog configuration wl reads too, at its default place. */
+const CONFIG_PATH = '/home/me/.claude/worklog/config.json'
+const CONFIG = JSON.stringify({
+  log: '~/.worklog.log',
+  scopes: ['ACME', 'BETA', 'OWN'],
+  categories: {
+    ACME: { shares: { ACME: 1 } },
+    BETA: { shares: { BETA: 1 } },
+    CLIENTS: { label: 'Clients (Acme+Beta)', short: 'Clients' },
+    'CLIENTS+OWN': { label: 'Clients + own', short: 'C+O' },
+    OWN: { label: 'Own' },
   },
-} as const
+})
 
-test('parseCategories reads CATEGORY, CATEGORY=Label and CATEGORY=Label|Short in hotkey order', async () => {
-  expect(parseCategories(' ACME , OWN=Own, BOTH=Both of them|Both ,')).toEqual([
+test('parseConfig reads the categories in hotkey order, label and short falling back to the name', async () => {
+  const parsed = parseConfig(JSON.stringify({
+    log: '~/my.log',
+    categories: { acme: {}, OWN: { label: 'Own' }, BOTH: { label: 'Both of them', short: 'Both' }, NONE: null },
+  }))
+  expect(parsed.log).toBe('~/my.log')
+  expect(parsed.categories).toEqual([
     { value: 'ACME', label: 'ACME', short: 'ACME', hotkey: '1' },
     { value: 'OWN', label: 'Own', short: 'Own', hotkey: '2' },
     { value: 'BOTH', label: 'Both of them', short: 'Both', hotkey: '3' },
+    { value: 'NONE', label: 'NONE', short: 'NONE', hotkey: '4' },
   ])
-  expect(parseCategories('')).toEqual([])
-  const many = parseCategories('A,B,C,D,E,F,G,H,I,J')
-  expect(many.map(c => c.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined])
+  expect(parseConfig('{}')).toEqual({ log: '~/.claude/worklog/worklog.log', categories: [] })
+  const many = parseConfig(JSON.stringify({ categories: Object.fromEntries('ABCDEFGHIJ'.split('').map(k => [k, {}])) }))
+  expect(many.categories.map(c => c.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined])
+  expect(() => parseConfig('not json')).toThrow()
 })
 
 test('findRunning reads only today\'s last line of the own session', async () => {
@@ -48,7 +62,7 @@ test('findRunning reads only today\'s last line of the own session', async () =>
  * `stop` appends a STOP line, `amend <cat>` rewrites the last line's category, `<cat> <comment>`
  * appends a new interval. `reads` collects the paths the plugin read.
  */
-function host(on: On, initialLog: string) {
+function host(on: On, initialLog: string, config: string | null = CONFIG) {
   const calls: { argv: readonly string[]; env?: Record<string, string> }[] = []
   const toasts: string[] = []
   const reads: string[] = []
@@ -68,6 +82,12 @@ function host(on: On, initialLog: string) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('fs.read', (_$, e) => {
     reads.push(e.path)
+    if (e.path.endsWith('.json')) {
+      if (config === null) {
+        throw new Error(`ENOENT: ${e.path}`)
+      }
+      return { value: config }
+    }
     return { value: log }
   })
   on('process.run', (_$, e) => {
@@ -115,10 +135,39 @@ test('a resumed session (no session.start) still shows the band after its first 
   await ui.unmount()
 })
 
-test('the band reads the configured log, ~ expanded', OPTIONS, async ($, on) => {
+test('the band reads the worklog configuration wl reads, then the log it names, ~ expanded', OPTIONS, async ($, on) => {
   const { reads } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`)
   await start($)
-  expect(reads).toContain('/home/me/.worklog.log')
+  expect(reads.slice(0, 2)).toEqual([CONFIG_PATH, '/home/me/.worklog.log'])
+})
+
+test('the config option points the band at another configuration', { options: { wl: 'bin/wl', config: '~/elsewhere/wl.json' } }, async ($, on) => {
+  const { reads } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`)
+  await start($)
+  expect(reads).toContain('/home/me/elsewhere/wl.json')
+})
+
+test('without a log in the configuration the band reads the default one', OPTIONS, async ($, on) => {
+  const { reads } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`, JSON.stringify({ categories: { OWN: {} } }))
+  await start($)
+  expect(reads).toContain('/home/me/.claude/worklog/worklog.log')
+})
+
+test('no band without a worklog configuration — wl takes no category then either', OPTIONS, async ($, on) => {
+  const { calls } = host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`, null)
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'stop' })).toBeUndefined()
+  expect(wlCalls(calls)).toEqual([])
+  await ui.unmount()
+})
+
+test('no band with a broken configuration', OPTIONS, async ($, on) => {
+  host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN|mod tooling`, 'not json')
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'stop' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the band shows the running interval and Stop runs wl stop for this session', OPTIONS, async ($, on) => {

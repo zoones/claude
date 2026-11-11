@@ -14,34 +14,39 @@ const REFRESH_MS = 15_000
 /** A category `wl` takes, as it writes it to the log; `hotkey` is the digit that picks it, if any. */
 export type Category = { value: string; label: string; short: string; hotkey: string | undefined }
 
+/** Where the worklog configuration lives unless the `config` option says otherwise — shared with wl. */
+const DEFAULT_CONFIG = '~/.claude/worklog/config.json'
+/** The log wl writes when the configuration names none. */
+const DEFAULT_LOG = '~/.claude/worklog/worklog.log'
+
 /**
- * Reads the `categories` option: comma-separated `CATEGORY`, `CATEGORY=Label` or
- * `CATEGORY=Label|Short`, in hotkey order. Only the first nine get a digit.
+ * The worklog configuration as far as the band needs it — the same file wl reads, so the band
+ * offers exactly the categories wl accepts: `log`, and `categories` in hotkey order, each with an
+ * optional `label` (the band's button) and `short` (the picker row). Only the first nine get a digit.
  */
-export function parseCategories(spec: string): Category[] {
-  const ret = spec
-    .split(',')
-    .map(part => part.trim())
-    .filter(part => part !== '')
-    .map((part, i) => {
-      const eq = part.indexOf('=')
-      const value = (eq < 0 ? part : part.slice(0, eq)).trim()
-      const [label = '', short = ''] = eq < 0 ? [] : part.slice(eq + 1).split('|').map(s => s.trim())
-      const shownLabel = label || value
-      return { value, label: shownLabel, short: short || shownLabel, hotkey: i < 9 ? String(i + 1) : undefined }
-    })
+export function parseConfig(json: string): { log: string; categories: Category[] } {
+  const data = JSON.parse(json) as { log?: unknown; categories?: Record<string, { label?: unknown; short?: unknown } | null> }
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+  const categories = Object.entries(data.categories ?? {}).map(([key, c], i) => {
+    const value = key.trim().toUpperCase()
+    const label = text(c?.label) || value
+    return { value, label, short: text(c?.short) || label, hotkey: i < 9 ? String(i + 1) : undefined }
+  })
+  const ret = { log: text(data.log) || DEFAULT_LOG, categories }
   return ret
 }
 
-/** The configuration of this load (`userConfig` in plugin.json); set by `register`. */
-const config = { wl: '', log: '', categories: [] as Category[] }
+/** The options of this load (`userConfig` in plugin.json); set by `register`. */
+const options = { wl: '', config: '' }
+/** The categories of the worklog configuration, re-read on every refresh. */
+let categories: Category[] = []
 
 /**
- * Where wl and its log live; resolved once per load by the first refresh. `wl` null = no wl
- * configured, or not executable from this session's root. Not tied to session.start alone: a
+ * Where wl and its configuration live; resolved once per load by the first refresh. `wl` null = no
+ * wl configured, or not executable from this session's root. Not tied to session.start alone: a
  * resumed session may never raise it.
  */
-const where = { isResolved: false, wl: null as string | null, logPath: '', tag: '' }
+const where = { isResolved: false, wl: null as string | null, home: '', configPath: '', tag: '' }
 
 /**
  * The open interval of `tag` in the worklog: today's last line of that session, unless it is a
@@ -65,7 +70,7 @@ export function findRunning(log: string, tag: string, today: string): Running | 
 
 /** An explicit split (`ACME=60,OWN=40`) is not a category and shows as written. */
 function labelOf(category: string) {
-  const ret = config.categories.find(c => c.value === category)?.label ?? category
+  const ret = categories.find(c => c.value === category)?.label ?? category
   return ret
 }
 
@@ -77,15 +82,16 @@ function expandHome(path: string, home: string) {
 
 async function resolveWhere($: EngineInterface) {
   where.isResolved = true
-  if (config.wl === '') {
+  if (options.wl === '') {
     return
   }
   const home = (await $.process.run(['printenv', 'HOME'])).stdout.trim()
-  const wl = expandHome(config.wl, home)
+  const wl = expandHome(options.wl, home)
   const wlPath = wl.startsWith('/') ? wl : `${await $.session.root()}/${wl}`
   const hasWl = (await $.process.run(['test', '-x', wlPath])).exitCode === 0
   where.wl = hasWl ? wlPath : null
-  where.logPath = expandHome(config.log, home)
+  where.home = home
+  where.configPath = expandHome(options.config || DEFAULT_CONFIG, home)
   if (hasWl) {
     $.clock.every(REFRESH_MS, () => refresh($))
   }
@@ -98,12 +104,24 @@ async function refresh($: EngineInterface) {
   if (where.wl === null) {
     return
   }
-  // Read every time: /clear and a resume go on under another session id.
+  // Read every time: /clear and a resume go on under another session id, and an edited
+  // configuration counts from the next refresh on.
   where.tag = (await $.session.id()).slice(0, 8)
+  let logPath: string
+  try {
+    const parsed = parseConfig(await $.fs.read(where.configPath))
+    categories = parsed.categories
+    logPath = expandHome(parsed.log, where.home)
+  } catch {
+    // No configuration, or a broken one: wl takes no category then either — no band.
+    categories = []
+    await update($, running, () => null)
+    return
+  }
   const today = (await $.process.run(['date', '+%F'])).stdout.trim()
   let log = ''
   try {
-    log = await $.fs.read(where.logPath)
+    log = await $.fs.read(logPath)
   } catch {
     // No log yet: nothing is running.
   }
@@ -169,10 +187,9 @@ async function close($: EngineInterface) {
   await update($, pending, () => null)
 }
 
-export const register: Register = (on, options: PluginOptions) => {
-  config.wl = String(options.wl ?? '').trim()
-  config.log = String(options.log ?? '').trim() || '~/.worklog.log'
-  config.categories = parseCategories(String(options.categories ?? ''))
+export const register: Register = (on, pluginOptions: PluginOptions) => {
+  options.wl = String(pluginOptions.wl ?? '').trim()
+  options.config = String(pluginOptions.config ?? '').trim()
 
   on('session.start', async ($, e, next) => {
     await refresh($)
@@ -214,7 +231,7 @@ export const register: Register = (on, options: PluginOptions) => {
         </Box>
         {picking && (
           <Box gap={2}>
-            {config.categories.filter(c => c.value !== current.category).map(c => (
+            {categories.filter(c => c.value !== current.category).map(c => (
               <Button key={`pick-${c.value}`} plain hotkey={c.hotkey} label={c.short} onPress={() => pick($, c.value)} />
             ))}
             <Button key="cancel" plain role="dismiss" hotkey="a" label="Abbrechen" onPress={() => close($)} />
