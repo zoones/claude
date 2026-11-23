@@ -1,6 +1,6 @@
 ---
 name: worktime
-description: "Generate a per-day, per-category interval list for the time-tracking app. Runs gather-worktime.sh against a 7-day window (any start date, weekend included) over the configured repos and synthesises billable intervals from the worklog, your keystrokes, git activity, IDE sessions and build logs. Invoke with /worktime [YYYY-MM-DD]; without a date it catches up from the last day already booked to today."
+description: "Generate a per-day, per-category interval list for the time-tracking app. Runs gather-worktime.sh against a 7-day window (any start date, weekend included) over the configured repos and synthesises billable intervals from the worklog, your keystrokes, git activity, IDE sessions, VPN sessions (Drawbridge) and build logs. Invoke with /worktime [YYYY-MM-DD]; without a date it catches up from the last day already booked to today."
 ---
 
 # /worktime — Worktime Interval Synthesis
@@ -192,6 +192,27 @@ Rules for synthesis:
   it as a question instead ("agent ran until 16:27, were you still on it?"). Spend the care on client-billable
   blocks: time on a not-debitable category is not invoiced, the user does not need it precise — don't raise
   borderline questions about it.
+- **VPN sessions (Section 9) — customer work that leaves no commit.** Drawbridge (a VPN client) logs when which
+  VPN ran, the reason typed when connecting, and per minute whether traffic flowed through the tunnel (`active`)
+  and whether someone was at the Mac — screen unlocked, input within 5 min (`present`). The section prints per
+  session and reason the `work` intervals = `active ∩ present`, and the category from the configuration's
+  `vpn.profiles` (`[?]` = not mapped: decide by the categories' `describe` and suggest the mapping to the user).
+    - **`work` intervals are presence evidence**, like keystrokes: they count as worked time even on a day with no
+      Claude input and no commit — this is exactly what ops work through a VPN (SSH, RDP, web consoles) looks like.
+    - **The span alone is NOT time.** A VPN left up over lunch or overnight has no `work` there; never book the
+      session span, only its `work` intervals (bridged and rounded to 15 min like everything else).
+    - **Declared worklog intervals still win.** A `work` interval inside a `wl` interval of ANOTHER category is not
+      booked twice and not picked silently — a VPN often just stays up in the background (with a full tunnel
+      `active` only means "online"). List it in the assumptions with both categories and the minutes and ask. Inside
+      a `wl` interval of the SAME category it simply confirms presence (no clipping there).
+    - **Outside any `wl` interval** book the `work` intervals to the VPN's category. The reason text is the source
+      for the comment, but worded by the invoice rules below (no ticket numbers, topic level).
+    - `app not running … (presence unknown)`: traffic while Drawbridge itself did not run — not booked on its own;
+      ask when it is more than a few minutes on a client-billable VPN.
+    - `OPEN` sessions are covered up to their last checkpoint (one per full hour); for today, book up to there and
+      say so. `failed` attempts and launches (`ssh "…" 08:20`) are supporting evidence only.
+    - The `end:` reason is technical (`extension-update`, `network`, `sleep` …), not the end of the work: two
+      sessions of the same VPN a few minutes apart are one block when the gap has other evidence.
 - **Anchors for start/end of work day**:
     - First commit of day (Section 3) = lower bound for "work started by then".
     - IntelliJ `IDE STARTED` (Section 4) = better start anchor when present.

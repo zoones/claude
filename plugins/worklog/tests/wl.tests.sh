@@ -724,6 +724,90 @@ check "a non-object error body is reported, not a stack trace" "yes" "$(contains
 out=$(WL_TEST_STATUS=401 WL_TEST_BODY= remote booked 2026-10-05)
 check "booked names a refused token" "yes" "$(contains "$out" "token refused")"
 
+# ---------------------------------------------------------------------------
+# VPN sessions from Drawbridge's worktime log (section 9 of gather-worktime.sh)
+# ---------------------------------------------------------------------------
+echo
+echo "── VPN sessions ──"
+vpnDir="$tmp/drawbridge"
+mkdir -p "$vpnDir"
+vpnConfig="$tmp/vpn-config.json"
+cat > "$vpnConfig" <<JSON
+{ "vpn": { "logDir": "$vpnDir",
+           "profiles": { "6a1f0d2c-1111-4c3b-8e2a-00000000000b": "beta", "contoso*": "ACME" } } }
+JSON
+C='"vpn":{"id":"6a1f0d2c-1111-4c3b-8e2a-000000000001","name":"Contoso","group":null}'
+N='"vpn":{"id":"6a1f0d2c-1111-4c3b-8e2a-00000000000b","name":"Northwind","group":null}'
+P='"vpn":{"id":"6a1f0d2c-1111-4c3b-8e2a-00000000000c","name":"Private","group":null}'
+H='"v":1,"kind":"vpn","device":"Work MacBook"'
+# October: a session that starts before midnight on the 31st and ends in November's file
+cat > "$vpnDir/worktime-2026-10.jsonl" <<JSONL
+{$H,"ts":"2026-10-31T22:30:00+01:00","event":"start","session":"s-month",$P,"protocol":"ssl","start":"2026-10-31T22:30:00+01:00","end":null,"reason":null}
+JSONL
+cat > "$vpnDir/worktime-2026-11.jsonl" <<JSONL
+{$H,"ts":"2026-11-01T00:30:00+01:00","event":"end","session":"s-month",$P,"protocol":"ssl","start":"2026-10-31T22:30:00+01:00","end":"2026-11-01T00:30:00+01:00","outcome":"connected","endReason":"user","endEstimated":false,"active":[["2026-10-31T22:30:00+01:00","2026-11-01T00:30:00+01:00"]],"present":[["2026-10-31T22:30:00+01:00","2026-10-31T23:15:00+01:00"],["2026-11-01T00:00:00+01:00","2026-11-01T00:20:00+01:00"]],"sleep":[],"unobserved":[],"reason":null}
+{$H,"ts":"2026-11-23T08:02:11+01:00","event":"start","session":"s-day",$C,"protocol":"ikev2","start":"2026-11-23T08:02:11+01:00","end":null,"reason":"Ticket 4711 – mail migration"}
+{"v":1,"kind":"connection","device":"Work MacBook","ts":"2026-11-23T08:20:40+01:00","event":"launch","session":"c-1","connection":{"id":"x","name":"Mail server SSH","type":"ssh"},"vpnSession":"s-day"}
+{$H,"ts":"2026-11-23T09:00:00+01:00","event":"checkpoint","session":"s-day",$C,"from":"2026-11-23T08:02:11+01:00","to":"2026-11-23T09:00:00+01:00","active":[["2026-11-23T08:03:00+01:00","2026-11-23T09:00:00+01:00"]],"present":[["2026-11-23T08:02:00+01:00","2026-11-23T09:00:00+01:00"]],"sleep":[],"unobserved":[]}
+{$H,"ts":"2026-11-23T10:15:03+01:00","event":"reason","session":"s-day",$C,"reason":"Firewall review"}
+{$H,"ts":"2026-11-23T12:41:57+01:00","event":"end","session":"s-day",$C,"protocol":"ikev2","start":"2026-11-23T08:02:11+01:00","end":"2026-11-23T12:41:57+01:00","outcome":"connected","endReason":"user","endEstimated":false,"active":[["2026-11-23T08:03:00+01:00","2026-11-23T10:48:00+01:00"],["2026-11-23T11:52:00+01:00","2026-11-23T12:41:00+01:00"]],"present":[["2026-11-23T08:02:00+01:00","2026-11-23T10:51:00+01:00"],["2026-11-23T11:50:00+01:00","2026-11-23T12:42:00+01:00"]],"sleep":[],"unobserved":[],"reason":"Firewall review"}
+{$H,"ts":"2026-11-24T08:00:40+01:00","event":"end","session":"s-fail",$C,"protocol":"ikev2","start":"2026-11-24T08:00:00+01:00","end":"2026-11-24T08:00:40+01:00","outcome":"failed","endReason":"error","endEstimated":false,"active":[],"present":[["2026-11-24T08:00:00+01:00","2026-11-24T08:01:00+01:00"]],"sleep":[],"unobserved":[],"reason":null}
+{$H,"ts":"2026-11-24T09:10:00+01:00","event":"start","session":"s-open",$N,"protocol":"openvpn","start":"2026-11-24T09:10:00+01:00","end":null,"reason":"Rollout"}
+{$H,"ts":"2026-11-24T10:00:00+01:00","event":"checkpoint","session":"s-open",$N,"from":"2026-11-24T09:10:00+01:00","to":"2026-11-24T10:00:00+01:00","active":[["2026-11-24T09:11:00+01:00","2026-11-24T10:00:00+01:00"]],"present":[["2026-11-24T09:10:00+01:00","2026-11-24T09:40:00+01:00"]],"sleep":[],"unobserved":[]}
+{$H,"ts":"2026-11-24T11:00:00+01:00","event":"checkpoint","session":"s-open",$N,"from":"2026-11-24T10:00:00+01:00","to":"2026-11-24T11:00:00+01:00","active":[["2026-11-24T10:00:00+01:00","2026-11-24T10:30:00+01:00"]],"present":[],"sleep":[],"unobserved":[["2026-11-24T10:00:00+01:00","2026-11-24T11:00:00+01:00"]]}
+{$H,"ts":"2026-11-26T14:10:00+01:00","event":"end","session":"s-rdp",$C,"protocol":"ikev2","start":"2026-11-26T14:00:00+01:00","end":"2026-11-26T14:10:00+01:00","outcome":"connected","endReason":"user","endEstimated":false,"active":[["2026-11-26T14:00:00+01:00","2026-11-26T14:02:00+01:00"]],"present":[["2026-11-26T14:00:00+01:00","2026-11-26T14:10:00+01:00"]],"sleep":[],"unobserved":[],"reason":"Deploy"}
+{"v":1,"kind":"connection","device":"Work MacBook","ts":"2026-11-26T14:08:00+01:00","event":"end","session":"c-rdp","connection":{"id":"y","name":"Terminal server","type":"rdp"},"vpnSession":"s-rdp","start":"2026-11-26T14:01:00+01:00","end":"2026-11-26T14:08:00+01:00","endReason":"closed"}
+{"v":1,"kind":"connection","device":"Work MacBook","ts":"2026-11-27T09:20:00+01:00","event":"end","session":"c-late","connection":{"id":"y","name":"Terminal server","type":"rdp"},"vpnSession":"s-nocp","start":"2026-11-27T09:05:00+01:00","end":"2026-11-27T09:20:00+01:00","endReason":"closed"}
+{$H,"ts":"2026-11-27T09:00:00+01:00","event":"start","session":"s-nocp",$C,"protocol":"ikev2","start":"2026-11-27T09:00:00+01:00","end":null,"reason":"Deploy"}
+{$H,"ts":"2026-11-28T10:00:00+01:00","event":"start","session":"s-fix",$C,"protocol":"ikev2","start":"2026-11-28T10:00:00+01:00","end":null,"reason":"First wrong"}
+{$H,"ts":"2026-11-28T10:20:00+01:00","event":"reason","session":"s-fix",$C,"since":"2026-11-28T10:00:00+01:00","reason":"First fixed"}
+{$H,"ts":"2026-11-28T10:30:00+01:00","event":"reason","session":"s-fix",$C,"since":"2026-11-28T10:30:00+01:00","reason":"Second wrong"}
+{$H,"ts":"2026-11-28T10:45:00+01:00","event":"reason","session":"s-fix",$C,"since":"2026-11-28T10:30:00+01:00","reason":"Second fixed"}
+{$H,"ts":"2026-11-28T11:00:00+01:00","event":"end","session":"s-fix",$C,"protocol":"ikev2","start":"2026-11-28T10:00:00+01:00","end":"2026-11-28T11:00:00+01:00","outcome":"connected","endReason":"extension-update","endEstimated":false,"active":[["2026-11-28T10:00:00+01:00","2026-11-28T11:00:00+01:00"]],"present":[["2026-11-28T10:00:00+01:00","2026-11-28T11:00:00+01:00"]],"sleep":[],"unobserved":[],"reason":"Second fixed"}
+{"v":2,"kind":"vpn","device":"Work MacBook","ts":"2026-11-24T12:00:00+01:00","event":"start","session":"s-future",$C,"start":"2026-11-24T12:00:00+01:00"}
+{$H,"ts":"2026-11-24T12:00:00+01:00","event":"something-new","session":"s-open"}
+{$H,"ts":"2026-11-24T12:30:00+01:00","event":"end","session":"s-cut
+JSONL
+vpn() { TZ=Europe/Vienna WL_CONFIG="$vpnConfig" python3 "$BIN/_wl_vpn_sessions.py" "$@" 2>&1; }
+
+out=$(vpn 2026-11-23 2026-11-23)
+check "maps a VPN by name glob, case-insensitive" "yes" "$(contains "$out" "Contoso [ACME] ikev2 08:02–12:42  (end: user)")"
+check "splits the session at the reason change" "yes" "$(contains "$out" "08:02–10:15  work 132m = 08:03–10:15 · active 132m · present 133m · \"Ticket 4711 – mail migration\"")"
+check "work is active AND present — the lunch break drops out" "yes" "$(contains "$out" "10:15–12:42  work  82m = 10:15–10:48, 11:52–12:41")"
+check "the end's intervals win over the checkpoints" "yes" "$(contains "$out" "Σ work: ACME 214m")"
+check "lists a launch under its VPN" "yes" "$(contains "$out" "ssh \"Mail server SSH\" 08:20")"
+
+out=$(vpn 2026-10-31 2026-11-01)
+check "a session over midnight is clipped to its first day" "yes" "$(contains "$out" "Private [?] ssl 22:30–00:00")"
+check "  with that day's work" "yes" "$(contains "$out" "22:30–00:00  work  45m = 22:30–23:15")"
+check "and continues on the next, from the next month's file" "yes" "$(contains "$out" "Private [?] ssl 00:00–00:30  (since 2026-10-31 22:30; end: user)")"
+check "  with that day's work" "yes" "$(contains "$out" "00:00–00:30  work  20m = 00:00–00:20")"
+check "an unmapped VPN shows as ?" "yes" "$(contains "$out" "Σ work: ? 20m")"
+
+out=$(vpn 2026-11-24 2026-11-25)
+check "maps a VPN by id over any glob" "yes" "$(contains "$out" "Northwind [BETA] openvpn 09:10–11:00")"
+check "an open session has activity data up to its last checkpoint" "yes" "$(contains "$out" "OPEN — no end yet; activity data up to 2026-11-24 11:00 (last checkpoint)")"
+check "  from the checkpoints' intervals" "yes" "$(contains "$out" "work  29m = 09:11–09:40")"
+check "active while the app did not run is shown apart" "yes" "$(contains "$out" "app not running, active 30m = 10:00–10:30 (presence unknown)")"
+check "a failed attempt says so" "yes" "$(contains "$out" "failed, never connected; end: error")"
+check "skips lines of a newer format version" "0" "$(printf '%s\n' "$out" | grep -c '12:00–')"
+check "survives a cut-off last line" "yes" "$(contains "$out" "Σ work: BETA 29m")"
+check "a day without sessions says so" "yes" "$(contains "$out" "(no VPN sessions)")"
+
+out=$(vpn 2026-11-26 2026-11-27)
+check "an open remote desktop counts as work while someone is there" "yes" "$(contains "$out" "14:00–14:10  work   8m = 14:00–14:08 · active 2m · present 10m · connections open 7m")"
+check "an open session without checkpoint runs to its last sign of life" "yes" "$(contains "$out" "Contoso [ACME] ikev2 09:00–09:20")"
+check "  and says there is no activity data yet" "yes" "$(contains "$out" "activity data none yet (first checkpoint at the next full hour); last sign of life 2026-11-27 09:20")"
+
+out=$(vpn 2026-11-28 2026-11-28)
+check "a corrected reason replaces the start's" "yes" "$(contains "$out" "10:00–10:30  work  30m = 10:00–10:30 · active 30m · present 30m · \"First fixed\"")"
+check "a new reason starts a stretch, its correction replaces it there" "yes" "$(contains "$out" "10:30–11:00  work  30m = 10:30–11:00 · active 30m · present 30m · \"Second fixed\"")"
+check "no corrected-away reason is left" "0" "$(printf '%s\n' "$out" | grep -c 'wrong')"
+
+out=$(TZ=Europe/Vienna WL_CONFIG="$tmp/none.json" python3 "$BIN/_wl_vpn_sessions.py" 2026-11-24 2026-11-24 2>&1)
+check "without a configuration it reads Drawbridge's own folder" "yes" "$(contains "$out" "Library/Application Support/Drawbridge/Worktime")"
+check "  and asks for the profile mapping" "yes" "$(contains "$out" "map VPN names to categories")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "Result: $pass passed"

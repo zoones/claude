@@ -13,7 +13,8 @@ Book your working time per Claude Code session — and get it billed right.
 - **A band above the prompt** — `⏱ Own ▾ · Stop`: switch the category from now on or rebook the whole interval,
   stop it, without typing `wl` (`ctrl+x tab` focuses it, digits pick, `u`/`f` rebook/continue).
 - **`/worktime`** — turns the log, your own keystrokes in the session transcripts, git commits of all configured
-  repos, IDE and build logs into per-day intervals per category, plus a booking view per billing scope. Parallel
+  repos, IDE and build logs and VPN sessions (Drawbridge's worktime log: which VPN, why, and the minutes someone
+  worked through it) into per-day intervals per category, plus a booking view per billing scope. Parallel
   sessions are never booked twice: `wl parallel` declares a shared window, any other overlap is put to you.
 - **Optional booking backend** — `wl push` / `wl booked` send the synthesis to a Zoones time-tracking instance and read
   back what is booked there.
@@ -65,6 +66,7 @@ the scripts know none. `wl config` shows what applies, or prints this example wh
 | `…keywords` | /worktime | commit subjects naming one of these words are tagged with the category |
 | `author`, `repos` | /worktime | whose commits, in which repos (`pathHints` tag files, `name` tags the rest, `buildLogs` globs); without `repos` the current repo |
 | `rounding` | /worktime | booking granularity and where the leftover quarter-hour goes |
+| `vpn` | /worktime | VPN sessions from [Drawbridge](https://gitlab.com/zoones.net/oss/drawbridge)'s worktime log: `logDir` (default: Drawbridge's own folder) and `profiles` — VPN name glob (case-insensitive) or VPN id → category, e.g. `{ "Acme*": "ACME" }` |
 
 ### Status line and plain terminal
 
@@ -92,7 +94,7 @@ interval. Never edit the log by hand — `wl amend` rebooks and re-times entries
 ## Develop
 
 ```bash
-plugins/worklog/tests/wl.tests.sh          # wl, its hooks, status line, shims (throwaway log and config)
+plugins/worklog/tests/wl.tests.sh          # wl, its hooks, status line, shims, VPN log reader (throwaway log and config)
 claude plugin test plugins/worklog         # the band
 claude plugin validate plugins/worklog
 ```

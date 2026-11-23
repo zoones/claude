@@ -15,6 +15,8 @@
 #                                folder name); pathHints tag files by path; buildLogs are activity logs
 #   "categories": { "<CAT>": { "keywords": ["word", ...] } }
 #                                commit subjects naming one of these words are tagged with the category
+#   "vpn": { "logDir", "profiles": {"<VPN name glob | VPN id>": "<CATEGORY>"} }
+#                                Drawbridge's worktime log (section 9; see _wl_vpn_sessions.py)
 # Without "repos" the git repo of the current directory is scanned; REPO_DIR scans just that one.
 #
 # Output is written to /tmp/worktime-YYYY-WNN.txt and also printed to stdout.
@@ -477,6 +479,17 @@ for i in "${!REPO_PATHS[@]}"; do
     END { flush() }
   '
 done | sort
+
+# ---------------------------------------------------------------------------
+# SECTION 9: VPN sessions (Drawbridge's worktime log)
+# ---------------------------------------------------------------------------
+section "VPN SESSIONS (Drawbridge worktime log)"
+echo "Per session and reason: the span the VPN was up; work = minutes with traffic through the tunnel"
+echo "while someone was at the Mac (active ∩ present). [CAT] from vpn.profiles, [?] = not mapped."
+echo
+
+python3 -I "${BASH_SOURCE[0]%/*}/_wl_vpn_sessions.py" "$WEEK_START" "$WEEK_END" || \
+  echo "(reading the VPN log failed — see the error above)"
 
 # ---------------------------------------------------------------------------
 # Done
