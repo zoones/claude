@@ -48,6 +48,10 @@ mkdir -p "${LOG%/*}" 2>/dev/null || true
 CATEGORIES=""
 ALIASES=""
 SHARE_SCOPES=""
+# Activity type letters (" C D ") and the one an entry without a letter is of — optional: without
+# "activityTypes" in the configuration an entry has no type and /worktime pushes the default.
+TYPES=" "
+DEFAULT_TYPE=""
 loadConfig() {
   [ -z "$CATEGORIES" ] || return 0
   if [ ! -r "$CONFIG" ]; then
@@ -58,7 +62,9 @@ loadConfig() {
   out=$(jq -r '
     (.categories // {} | keys_unsorted[] | "C " + ascii_upcase),
     (.categories // {} | to_entries[] | .key as $k | (.value.aliases // [])[] | "A " + ascii_upcase + "=" + ($k | ascii_upcase)),
-    (.scopes // [] | .[] | "S " + ascii_upcase)
+    (.scopes // [] | .[] | "S " + ascii_upcase),
+    (.activityTypes // {} | keys_unsorted[] | "T " + ascii_upcase),
+    (.defaultActivityType // empty | "D " + ascii_upcase)
   ' "$CONFIG" 2>/dev/null) || {
     echo "wl: $CONFIG is not valid JSON" >&2
     exit 2
@@ -68,6 +74,17 @@ loadConfig() {
   SHARE_SCOPES=" "
   while IFS= read -r line; do
     name="${line#? }"
+    # An activity type is ONE letter after a '/', which no category or scope name may contain.
+    case "$line" in
+      "T "*|"D "*)
+        if ! [[ "$name" =~ ^[A-Z]$ ]]; then
+          echo "wl: $CONFIG: activity type '$name' must be a single letter A-Z" >&2
+          exit 2
+        fi
+        if [ "${line:0:1}" = T ]; then TYPES="$TYPES$name "; else DEFAULT_TYPE="$name"; fi
+        continue
+        ;;
+    esac
     # The log is |-separated and a split is ,/= separated: a name containing either would write a
     # line no reader parses back. STOP and PARALLEL are the log's own markers.
     if ! [[ "${name%%=*}" =~ ^[A-Z0-9_+-]+$ ]] || [ "$name" = STOP ] || [ "$name" = PARALLEL ]; then
@@ -83,6 +100,13 @@ loadConfig() {
   if [ "$CATEGORIES" = " " ]; then
     echo "wl: $CONFIG names no categories" >&2
     exit 2
+  fi
+  if [ -n "$DEFAULT_TYPE" ]; then
+    case "$TYPES" in *" $DEFAULT_TYPE "*) ;; *)
+      echo "wl: $CONFIG: defaultActivityType '$DEFAULT_TYPE' is not one of activityTypes" >&2
+      exit 2
+      ;;
+    esac
   fi
 }
 
@@ -111,9 +135,27 @@ atToIso() {
 # split for the interval that does not follow any category's usual split: `acme=60,own=40` (percent
 # per billing scope of the configuration, adding up to 100) or `acme,own` (even split). Same
 # all-or-none rule as the import, which takes exactly one of category and shares. Needs loadConfig.
+# Either may carry an activity type as `/<letter>` (`acme/c`, `acme=60,own=40/c`) — a letter of the
+# configuration's activityTypes; the default type is written without one, so each entry has ONE spelling.
 normalizeTarget() {
+  local target type="" base
+  target=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+  case "$target" in
+    */*)
+      type="${target##*/}"
+      target="${target%/*}"
+      [[ "$type" =~ ^[A-Z]$ ]] || return 1
+      case "$TYPES" in *" $type "*) ;; *) return 1 ;; esac
+      [ "$type" != "$DEFAULT_TYPE" ] || type=""
+      ;;
+  esac
+  base=$(normalizeBillingTarget "$target") || return 1
+  printf '%s%s' "$base" "${type:+/$type}"
+}
+
+normalizeBillingTarget() {
   local cat alias
-  cat=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+  cat="$1"
   case "$cat" in
     *,*|*=*) normalizeShares "$cat"; return ;;
   esac
@@ -191,6 +233,8 @@ wl — worklog: declare the debitable scope of what you are working on RIGHT NOW
   wl acme=60,own=40 "cutover"    explicit split for work that follows no category's usual split:
                                  percent per billing scope, adding up to 100
   wl acme,own "joint fix"        ... the same scopes split evenly
+  wl acme/c "code review"        ... of another activity type: a letter of activityTypes in the
+                                 configuration (status line: ACME-C); without one the default
   wl stop                        close the current interval (break / end of day)
   wl stop --now                  ... at the current second instead of the last activity
   wl stop --at 20:28             ... at an explicit time ([YYYY-MM-DD ]HH:MM[:SS])
@@ -238,12 +282,14 @@ its highest-priority evidence.
 `push` sends a file of intervals to a Zoones instance — the /worktime synthesis, which
 weighs this log against commits, build logs and your own input. The log itself is never
 sent: it records moments, and "until the next line" is how invented hours happen. The
-file is a JSON list of {start, end, category | shares, comment, source}; `shares` maps a
-billing scope id to a percentage ({"ACME": 60, "OWN": 40}, null = even split) for an
-interval that does not follow a category. Safe to repeat — an interval already imported
-(same source + start) is recognised; a changed end, comment or split is written onto that
-entry ("updated") — over a hand edit too — unless it is struck out, its start was moved
-by hand or its period is settled. Configuration is read from
+file is a JSON list of {start, end, category | shares, [activityType], comment, source};
+`shares` maps a billing scope id to a percentage ({"ACME": 60, "OWN": 40}, null = even
+split) for an interval that does not follow a category. `activityType` (an id or alias of
+the instance, e.g. "CONSULTING") is given only for an interval that is not of the default
+kind ZOONES_ACTIVITY_TYPE. Safe to repeat — an interval already imported (same source +
+start) is recognised; a changed end, comment, split or stated activityType is written onto
+that entry ("updated") — over a hand edit too — unless it is struck out, its start was
+moved by hand or its period is settled. Without activityType a known entry keeps its own. Configuration is read from
 ~/.wow/wl-test.env if that exists,
 otherwise ~/.wow/wl.env (override the whole choice with WL_ENV_FILE, the directory
 with WL_ENV_DIR); anything already exported wins over the file. The TEST file wins on
@@ -293,6 +339,9 @@ EOF
     echo "categories:${CATEGORIES% }"
     [ "$ALIASES" = " " ] || echo "aliases:   ${ALIASES% }"
     echo "scopes:    ${SHARE_SCOPES% }"
+    if [ "$TYPES" != " " ]; then
+      echo "activity types: $(jq -r '.activityTypes | to_entries | map((.key | ascii_upcase) + "=" + .value) | join(" ")' "$CONFIG")${DEFAULT_TYPE:+ (default $DEFAULT_TYPE; other: wl <category>/<letter>)}"
+    fi
     exit 0
     ;;
   show)
@@ -620,6 +669,10 @@ if mode == "booked":
         # The origin tells a pushed synthesis from a hand entry: /worktime has to leave the latter alone.
         origin = "wl" if (e.get("externalId") or "").startswith("wl:") else "manual"
         flags = [origin]
+        # the activity type decides the rate: a review rebooked as consulting must show on read-back
+        activity = ref(e.get("activityType")).get("activityTypeId")
+        if activity:
+            flags.append(activity)
         if start and not end:
             # a timer: it claims everything after its start, which is why proposals there come back as OVERLAP
             flags.append("running")
@@ -733,8 +786,10 @@ for s in skipped:
       shift 2
     fi
     CAT=""
+    amendTarget=""
     if [ $# -ge 1 ]; then
       loadConfig
+      amendTarget="$1"
       CAT=$(normalizeTarget "$1") || usage
       shift
     elif [ -z "$atIso" ]; then
@@ -758,7 +813,13 @@ for s in skipped:
     comment=$(printf '%s' "$old" | cut -d'|' -f4-)
     [ $# -eq 0 ] || comment="$*"
     # Category omitted (only with --at) = keep it — a STOP line stays a STOP.
-    [ -n "$CAT" ] || CAT=$(printf '%s' "$old" | cut -d'|' -f3)
+    oldCat=$(printf '%s' "$old" | cut -d'|' -f3)
+    [ -n "$CAT" ] || CAT="$oldCat"
+    # Rebooked without a type letter = keep the line's type: the band and `amend acme` change what is
+    # billed, not what kind of work it was. `acme/d` (the default letter) states it explicitly.
+    if [[ "$amendTarget" != */* && "$oldCat" == */* && "$CAT" != */* ]]; then
+      CAT="$CAT/${oldCat##*/}"
+    fi
     stamp=$(printf '%s' "$old" | cut -d'|' -f1)
 
     if [ -n "$atIso" ]; then

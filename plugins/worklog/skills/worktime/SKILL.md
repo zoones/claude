@@ -313,8 +313,8 @@ wl test                      # optional: URL, token scope, activity type — boo
 wl push <scratchpad>/intervals.json
 ```
 
-`intervals.json` is a list of `{start, end, category | shares, comment, source}` — each interval carries exactly ONE
-of `category` and `shares`:
+`intervals.json` is a list of `{start, end, category | shares, [activityType], comment, source}` — each interval
+carries exactly ONE of `category` and `shares`:
 
 - `start` / `end` are LOCAL wall-clock times WITHOUT an offset: `"2026-10-06T05:15:00"`. An ISO offset
   (`…T05:15:00+02:00`) fails the whole file and nothing is stored.
@@ -325,6 +325,12 @@ of `category` and `shares`:
   percent per billing scope id, e.g. `{"ACME": 60, "OWN": 40}`, adding up to 100; `{"ACME": null, "OWN": null}`
   splits evenly. Never derive `shares` from the config's category `shares` — that is exactly the double encoding the
   `category` rule forbids.
+- `activityType` only for an interval that is NOT of the push's default kind (`ZOONES_ACTIVITY_TYPE`, usually
+  development) — an id or alias of the instance, e.g. `"CONSULTING"` when the user's own billing rules or contract
+  price that kind of work differently. Omitted, a new entry takes the default and a known entry keeps its own; stated,
+  it rebooks a known entry on re-push. `wl booked` shows each entry's type, so read it back. A worklog line whose
+  category carries a letter (`STB/C`, `ACME=60,OWN=40/C`) declared its type when it was logged: take the id from the
+  config's `activityTypes` (`C` → `"CONSULTING"`), and strip the letter before reading the category or split.
 - `comment` is the summarised text, not the worklog line — and it is printed on the invoice; see the month-wide
   wording rule in Step 3.
 - `source` plus the start time form the entry's identity, which is what makes re-sending the same synthesis a no-op.

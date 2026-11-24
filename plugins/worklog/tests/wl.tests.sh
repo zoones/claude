@@ -478,6 +478,46 @@ check "another session sees nothing of it" "⏱ WL: —" "$(statusOf othersess)"
 "$WL" stop > /dev/null
 check "a stop shows as stopped" "yes" "$(contains "$(statusOf "$WL_SESSION")" "stopped")"
 
+# --- activity types: one letter after the category, the default written without it -----------------
+# A code review billed as consulting is decided when it is logged, so the status line can show it.
+cat > "$tmp/typed.json" <<'JSON'
+{
+  "scopes": ["ACME", "OWN"],
+  "categories": { "ACME": { "shares": { "ACME": 1 } }, "OWN": { "shares": { "OWN": 1 } } },
+  "activityTypes": { "D": "DEVELOPMENT", "C": "CONSULTING" },
+  "defaultActivityType": "D"
+}
+JSON
+reset
+WL_CONFIG="$tmp/typed.json" "$WL" acme/c "review" > /dev/null
+check "a type letter is logged after the category" "ACME/C" "$(lastCategory)"
+check "the status line shows it as CATEGORY-LETTER" "yes" \
+  "$(contains "$(WL_CONFIG="$tmp/typed.json" statusOf "$WL_SESSION")" "ACME-C — review")"
+WL_CONFIG="$tmp/typed.json" "$WL" amend own > /dev/null
+check "amend without a letter keeps the line's type" "OWN/C" "$(lastCategory)"
+WL_CONFIG="$tmp/typed.json" "$WL" amend own/d > /dev/null
+check "the default letter is written without a suffix" "OWN" "$(lastCategory)"
+check "and the status line shows the default letter" "yes" \
+  "$(contains "$(WL_CONFIG="$tmp/typed.json" statusOf "$WL_SESSION")" "OWN-D — review")"
+WL_CONFIG="$tmp/typed.json" "$WL" acme=60,own=40/c "joint review" > /dev/null
+check "a split takes a letter too" "ACME=60,OWN=40/C" "$(lastCategory)"
+check "the context hook names the type with the category" "yes" \
+  "$(contains "$(printf '{"session_id":"%s-aaaa"}' "$WL_SESSION" | WL_CONFIG="$tmp/typed.json" "$CONTEXT_HOOK")" "ACME=60,OWN=40/C")"
+check "wl config lists the letters" "yes" \
+  "$(contains "$(WL_CONFIG="$tmp/typed.json" "$WL" config)" "C=CONSULTING")"
+before=$(cat "$WL_LOG")
+WL_CONFIG="$tmp/typed.json" "$WL" acme/x > /dev/null 2>&1
+check "a letter the configuration does not name is refused" "2" "$?"
+"$WL" acme/c > /dev/null 2>&1
+check "without activityTypes no letter is accepted" "2" "$?"
+check "and none of them was logged" "$before" "$(cat "$WL_LOG")"
+"$WL" acme "plain" > /dev/null
+check "without activityTypes the status line shows no letter" "yes" \
+  "$(contains "$(statusOf "$WL_SESSION")" "ACME — plain")"
+printf '{ "scopes": ["A"], "categories": { "A": {} }, "activityTypes": { "CO": "CONSULTING" } }' > "$tmp/badtype.json"
+WL_CONFIG="$tmp/badtype.json" "$WL" a > /dev/null 2>&1
+check "an activity type that is not one letter is refused" "2" "$?"
+
 echo "wl-shims tests"
 
 # --- stable entry points outside Claude's Bash tool ------------------------------------------------------
@@ -677,7 +717,9 @@ booked='[
   "shares":[{"scope":{"scopeId":"ACME"},"share":null}]},
  {"workStart":"2026-10-05T06:30:00","workEnd":"2026-10-05T08:00:00","comment":"cutover","externalId":"wl:2026-10-05T06:30:worktime",
   "billed":false,"inactive":false,"shares":[{"scope":{"scopeId":"ACME"},"share":50},{"scope":{"scopeId":"OWN"},"share":50}]},
- {"workStart":"2026-10-05T11:00:00","workEnd":"2026-10-05T12:00:00","comment":"typo entry","billed":false,"inactive":true,"shares":[]}
+ {"workStart":"2026-10-05T11:00:00","workEnd":"2026-10-05T12:00:00","comment":"typo entry","billed":false,"inactive":true,"shares":[]},
+ {"workStart":"2026-10-06T09:00:00","workEnd":"2026-10-06T10:00:00","comment":"code review","externalId":"wl:2026-10-06T09:00:worktime",
+  "activityType":{"activityTypeId":"CONS"},"billed":false,"inactive":false,"shares":[{"scope":{"scopeId":"ACME"},"share":null}]}
 ]'
 out=$(WL_TEST_BODY="$booked" remote booked 2026-10-05 2026-10-06)
 check "booked reads the entries endpoint" "https://own.example/ng_api/workTimeManager/entries" "$(cat "$tmp/url" 2>/dev/null)"
@@ -691,7 +733,8 @@ check "names a hand entry as manual" "yes" "$(contains "$out" "call with ACME  [
 check "names a pushed one as wl, with its split" "yes" "$(contains "$out" "ACME=50,OWN=50")"
 check "and marks it" "yes" "$(contains "$out" "cutover  [wl]")"
 check "shows a struck-out entry as such" "yes" "$(contains "$out" "[manual, struck out]")"
-check "but does not count it" "yes" "$(contains "$out" "4.00h booked")"
+check "names the activity type it was booked as" "yes" "$(contains "$out" "code review  [wl, CONS]")"
+check "but does not count it" "yes" "$(contains "$out" "5.00h booked")"
 check "booked exits 0" "0" "$(cat "$tmp/rc")"
 
 # a timer started in Zoones has no end yet — it claims everything after it, so it has to say so

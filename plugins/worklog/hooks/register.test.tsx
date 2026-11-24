@@ -297,6 +297,14 @@ test('an explicit split shows as written and every project is offered', OPTIONS,
   await ui.unmount()
 })
 
+test('a stated activity type follows the label, like in the status line', OPTIONS, async ($, on) => {
+  host(on, `${TODAY}T08:00:00+0200|${TAG}|OWN/C|code review`)
+  await start($)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'category' })).toMatchObject({ text: 'Own-C ▾' })
+  await ui.unmount()
+})
+
 test('no band when this session has nothing running', OPTIONS, async ($, on) => {
   host(on, `${TODAY}T08:00:00+0200|other123|ACME|other tab`)
   await start($)

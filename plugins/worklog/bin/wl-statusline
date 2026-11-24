@@ -30,5 +30,13 @@ since=$(printf '%s' "$last" | cut -d'|' -f1 | cut -dT -f2 | cut -d: -f1-2)
 if [ "$cat" = "STOP" ]; then
   printf '⏱ WL: \033[33m⏸ stopped %s\033[0m' "$since"
 else
+  # The activity type as one letter: "STB-C" for a stated one, "STB-D" for the configured default.
+  # Without activityTypes in the configuration there is no type to show.
+  if [[ "$cat" == */* ]]; then
+    cat="${cat%/*}-${cat##*/}"
+  else
+    defaultType=$(jq -r '.defaultActivityType // empty | ascii_upcase' "$(wlConfigPath)" 2>/dev/null || true)
+    cat="$cat${defaultType:+-$defaultType}"
+  fi
   printf '⏱ WL: \033[36m%s\033[0m %s(%s)' "$cat" "${cmt:+— ${cmt} }" "$since"
 fi

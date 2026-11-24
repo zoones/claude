@@ -67,9 +67,15 @@ export function findRunning(log: string, tag: string, today: string): Running | 
   return ret
 }
 
-/** An explicit split (`ACME=60,OWN=40`) is not a category and shows as written. */
+/**
+ * An explicit split (`ACME=60,OWN=40`) is not a category and shows as written. A stated activity type
+ * (`ACME/C`) follows the label as `-C`, like in the status line.
+ */
 function labelOf(category: string) {
-  const ret = categories.find(c => c.value === category)?.label ?? category
+  const slash = category.lastIndexOf('/')
+  const base = slash < 0 ? category : category.slice(0, slash)
+  const type = slash < 0 ? '' : `-${category.slice(slash + 1)}`
+  const ret = (categories.find(c => c.value === base)?.label ?? base) + type
   return ret
 }
 

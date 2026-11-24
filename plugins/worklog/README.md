@@ -66,6 +66,7 @@ the scripts know none. `wl config` shows what applies, or prints this example wh
 | `…keywords` | /worktime | commit subjects naming one of these words are tagged with the category |
 | `author`, `repos` | /worktime | whose commits, in which repos (`pathHints` tag files, `name` tags the rest, `buildLogs` globs); without `repos` the current repo |
 | `rounding` | /worktime | booking granularity and where the leftover quarter-hour goes |
+| `activityTypes`, `defaultActivityType` | wl, status line, /worktime | optional: one letter per activity type of the instance, e.g. `{ "D": "DEVELOPMENT", "C": "CONSULTING" }`, and the letter an entry without one is of. `wl acme/c` logs consulting; the status line shows `ACME-C` / `ACME-D`; /worktime pushes the type's id as `activityType` |
 | `vpn` | /worktime | VPN sessions from [Drawbridge](https://gitlab.com/zoones.net/oss/drawbridge)'s worktime log: `logDir` (default: Drawbridge's own folder) and `profiles` — VPN name glob (case-insensitive) or VPN id → category, e.g. `{ "Acme*": "ACME" }` |
 
 ### Status line and plain terminal
