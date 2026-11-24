@@ -190,7 +190,10 @@ test('the band shows the running interval and Stop runs wl stop for this session
     expect(await ui.find({ type: 'Button', key: 'stop' })).toMatchObject({ props: { plain: true, dimColor: true } })
     expect(await ui.find({ type: 'Text', text: /mod tooling|seit/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /─/ })).toBeUndefined()
-    expect(await ui.drawn()).toMatchObject({ type: 'Box', props: { marginTop: 1, alignItems: 'flex-end' } })
+    // The host stacks every plugin's part of the slot in one column; ours is the band itself.
+    const drawn = await ui.drawn()
+    const band = drawn?.children?.find(c => typeof c === 'object' && c.part?.plugin === 'worklog')
+    expect(band).toMatchObject({ type: 'Box', props: { marginTop: 1, alignItems: 'flex-end' } })
     await ui.unmount()
   }
 
