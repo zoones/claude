@@ -50,7 +50,9 @@ the scripts know none. `wl config` shows what applies, or prints this example wh
     "BOTH": { "label": "Acme + own", "short": "A+O", "aliases": ["A+O"], "shares": { "ACME": 1, "OWN": 1 },
               "describe": "product work usable by Acme and ourselves", "default": true }
   },
-  "rounding": { "granularityMinutes": 15, "leftoverTo": "OWN" }
+  "rounding": { "granularityMinutes": 15, "leftoverTo": "OWN" },
+  "activityTypes": { "D": "DEVELOPMENT", "C": "CONSULTING" },
+  "defaultActivityType": "D"
 }
 ```
 

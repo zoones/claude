@@ -324,12 +324,16 @@ wl: no configuration at $CONFIG (override with WL_CONFIG). Example:
     "BOTH": { "label": "Acme + own", "short": "A+O", "aliases": ["A+O"], "shares": { "ACME": 1, "OWN": 1 },
               "describe": "product work usable by Acme and ourselves", "default": true }
   },
-  "rounding": { "granularityMinutes": 15, "leftoverTo": "OWN" }
+  "rounding": { "granularityMinutes": 15, "leftoverTo": "OWN" },
+  "activityTypes": { "D": "DEVELOPMENT", "C": "CONSULTING" },
+  "defaultActivityType": "D"
 }
 
 categories: what an entry is booked to (wl <category>), in the order the worklog band offers them;
 scopes: the billing scopes an explicit split names (wl acme=60,own=40); shares: how /worktime fans a
-category out to the scopes; label/short: the band's button and picker row.
+category out to the scopes; label/short: the band's button and picker row; activityTypes (optional):
+one letter per activity type of the booking instance (wl acme/c, status line ACME-C), the default
+written without one.
 EOF
       exit 0
     fi

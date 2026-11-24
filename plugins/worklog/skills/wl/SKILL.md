@@ -37,6 +37,11 @@ single call:
   100; `acme,own` without numbers splits evenly. Also valid in `amend`. Use it when the user states a split ("60%
   Acme, 40% own"); `wl` refuses an invalid one (exit 2) and writes nothing — report that instead of guessing a
   corrected split.
+- `/wl acme/c rest...` → `wl acme/c "rest..."` — work of another activity type than the default (e.g. a code
+  review billed as consulting): one letter of the config's `activityTypes` after a `/`, on a category or a split
+  (`acme=60,own=40/c`); the status line shows `ACME-C`. Without a letter the entry is of `defaultActivityType`.
+  `amend` without a letter keeps the line's type; `amend acme/d` sets the default back. `wl` refuses a letter the
+  configuration does not name.
 - `/wl <category> --at HH:MM rest...` → `wl <category> --at HH:MM "rest..."` — the switch happened earlier ("since
   14:00 this is Acme"). Only after this session's last entry; an earlier point is `amend --at`.
 - `/wl parallel --from HH:MM [--to HH:MM] rest...` → `wl parallel --from HH:MM [--to HH:MM] "rest..."` — the user
@@ -105,6 +110,10 @@ prompt and `/worktime`. What it cannot bring:
 1. **The configuration** — `~/.claude/worklog/config.json` (override `WL_CONFIG`): the log file, the billing scopes,
    the categories (aliases, band label/short, shares, describe, subject keywords), and for `/worktime` the author and
    the repos to scan. Without it `wl` refuses any category, the band stays hidden, and `wl config` prints an example.
+   Optional: `activityTypes` (one letter per activity type, e.g. `{ "D": "DEVELOPMENT", "C": "CONSULTING" }`) and
+   `defaultActivityType` (`"D"`) — for whoever bills kinds of work at different rates. The values must be ids or
+   aliases of the booking instance's activity types (`wl test` proves the default one); the default should match
+   `ZOONES_ACTIVITY_TYPE`. Without them entries carry no type and the status line shows none.
 2. **A status line** (optional) — a plugin cannot set it. The plugin keeps stable shims in `~/.claude/worklog/bin/`
    (rewritten on every session start to point at the installed version): call `wl-statusline` from your own status
    line script with the status line's JSON on stdin, or point `statusLine` at a script that does:
@@ -120,6 +129,8 @@ Check each piece and report a short OK/missing list; offer to fix what's missing
 
 - `jq` is on the PATH
 - `wl config` resolves a configuration (not the example) and names the log the user expects
+- if the user bills kinds of work differently (development vs. consulting): `wl config` lists `activity types` with
+  a default — otherwise offer to add `activityTypes` + `defaultActivityType` (ask which letters and instance ids)
 - `~/.claude/worklog/bin/wl` and `~/.claude/worklog/bin/wl-statusline` exist (written at session start)
 - `~/.claude/worklog/activity/` has a file for the current session (proves the activity hook fires; it appears after
   the first tool call of a session started with the plugin enabled)
